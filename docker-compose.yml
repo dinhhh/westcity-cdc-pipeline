@@ -4,7 +4,8 @@
 # Services: postgres (+ CloudBeaver editor), kafka, connect (Debezium),
 #           connect-init (registers the outbox connector once, then exits),
 #           consumer-fraud / -crm / -loyalty / -dw (Python),
-#           python (runs the dashboards script).
+#           dashboard (live web dashboards, http://localhost:8050),
+#           python (runs scripts, e.g. the HTML dashboard export).
 # Flow:     core_banking.outbox -> Debezium -> Kafka topics
 #           bank.customer.events / bank.account.events
 #           -> consumers -> identity_fraud, crm, loyalty, westcity_dw bronze
@@ -22,8 +23,9 @@
 #                   then, once consumer-fraud has scored them:
 #                   docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/apply_decisions.sql
 # Warehouse load:   docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/run_all.sql
-# Dashboards:       docker compose exec python python /workspace/dashboards/build_dashboards.py
-#                   (open the files in dashboards/output/)
+# Dashboards:       live web app: http://localhost:8050 (service dashboard)
+#                   HTML export:  docker compose exec python python /workspace/dashboards/build_dashboards.py
+#                                 (files in dashboards/output/)
 # Open psql:        docker compose exec postgres psql -U westcity_admin -d core_banking
 # From your Mac:    localhost:5433, user westcity_admin, password lab_admin
 # Read events:      docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
@@ -263,6 +265,25 @@ services:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # dashboard: the three dashboards as a live web app (Plotly Dash).
+  # Open http://localhost:8050 - the charts re-read the gold views every
+  # 5 seconds, so a warehouse load shows up without reloading the page.
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build: ./python
+    command: python -u /workspace/dashboards/app.py
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./dashboards:/workspace/dashboards:ro
+    environment:
+      TZ: Australia/Sydney                 # "page refreshed" time
+    depends_on:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
 

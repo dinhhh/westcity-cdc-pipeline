@@ -1,0 +1,5 @@
+psycopg2-binary==2.9.13
+confluent-kafka==2.15.1
+pandas==3.0.6
+plotly==7.1.0
+dash==4.4.1
