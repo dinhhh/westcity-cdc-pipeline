@@ -179,7 +179,8 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    NEW.version := OLD.version + 1;
+    NEW.version    := OLD.version + 1;
+    NEW.updated_at := now();   -- time of the last change
     RETURN NEW;
 END;
 $$;

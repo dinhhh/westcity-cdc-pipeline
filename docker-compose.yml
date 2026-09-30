@@ -2,17 +2,28 @@
 # West City Bank – event-driven integration prototype (UTS 32113 Assignment 2)
 #
 # Services: postgres (+ CloudBeaver editor), kafka, connect (Debezium),
-#           connect-init (registers the outbox connector once, then exits).
+#           connect-init (registers the outbox connector once, then exits),
+#           consumer-fraud / -crm / -loyalty / -dw (Python),
+#           python (runs the dashboards script).
 # Flow:     core_banking.outbox -> Debezium -> Kafka topics
 #           bank.customer.events / bank.account.events
+#           -> consumers -> identity_fraud, crm, loyalty, westcity_dw bronze
+#           -> etl/ (SQL) -> silver -> gold -> dashboards/ (Plotly HTML)
 #
-# Start:            docker compose up -d
+# Start:            docker compose up -d --build
 # Rebuild data:     docker compose down
 #                   docker volume rm westcity_pgdata westcity_kafkadata
-#                   docker compose up -d
+#                   docker compose up -d --build
 #                   (reset Postgres and Kafka TOGETHER: Debezium's saved
 #                   position in Kafka must match the database. CloudBeaver's
 #                   saved connection is kept.)
+# Seed history:     (after the stack is up; the accounts go through Kafka)
+#                   docker compose exec -T postgres psql -U westcity_admin -d core_banking < seed/seed_history.sql
+#                   then, once consumer-fraud has scored them:
+#                   docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/apply_decisions.sql
+# Warehouse load:   docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/run_all.sql
+# Dashboards:       docker compose exec python python /workspace/dashboards/build_dashboards.py
+#                   (open the files in dashboards/output/)
 # Open psql:        docker compose exec postgres psql -U westcity_admin -d core_banking
 # From your Mac:    localhost:5433, user westcity_admin, password lab_admin
 # Read events:      docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
@@ -60,8 +71,13 @@ services:
       # name order (01_..., 02_...), stopping at the first error.
       # It does not look inside subfolders, so sql/ stays flat.
       - ./sql:/docker-entrypoint-initdb.d:ro
+      # Warehouse load scripts, run on demand: psql -f /etl/run_all.sql
+      - ./etl:/etl:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U westcity_admin -d postgres"]
+      # -h localhost (TCP): while the sql/ scripts run on first start, Postgres
+      # only listens on its local socket, so this check passes only once they
+      # have ALL finished. Debezium and the consumers wait for it.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U westcity_admin -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -190,6 +206,84 @@ services:
       connect:
         condition: service_healthy
     restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Consumers: the SAME script, consumers/consumer.py, run once per downstream
+  # system. Each reads bank.account.events in its own consumer group
+  # (fraud-consumer, crm-consumer, loyalty-consumer), so every system gets
+  # every event and keeps its own position. Image: python/Dockerfile (the
+  # course-lab python:3.11-slim image plus the Kafka and Postgres clients).
+  # Logs:  docker compose logs -f consumer-fraud consumer-crm consumer-loyalty
+  # Demo scene 6 (resilience): docker compose stop consumer-loyalty ... start
+  # ---------------------------------------------------------------------------
+  consumer-fraud:
+    build: ./python
+    command: python -u /workspace/consumers/consumer.py fraud
+    volumes:
+      - ./consumers:/workspace/consumers:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped            # a crash (e.g. database down) = restart and re-read
+
+  consumer-crm:
+    build: ./python
+    command: python -u /workspace/consumers/consumer.py crm
+    volumes:
+      - ./consumers:/workspace/consumers:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  consumer-loyalty:
+    build: ./python
+    command: python -u /workspace/consumers/consumer.py loyalty
+    volumes:
+      - ./consumers:/workspace/consumers:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Warehouse consumer: lands every core_banking event (both topics),
+  # unchanged, in westcity_dw bronze.core_event.
+  consumer-dw:
+    build: ./python
+    command: python -u /workspace/consumers/consumer.py dw
+    volumes:
+      - ./consumers:/workspace/consumers:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # python: the course-lab style Python container, kept running so scripts
+  # can be run in it. The whole project is mounted at /workspace, so the
+  # dashboards it writes appear in dashboards/output/ on your Mac.
+  #   docker compose exec python python /workspace/dashboards/build_dashboards.py
+  # ---------------------------------------------------------------------------
+  python:
+    build: ./python
+    volumes:
+      - .:/workspace
+    environment:
+      TZ: Australia/Sydney                 # "built at" time on the dashboards
+    stdin_open: true
+    tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:
