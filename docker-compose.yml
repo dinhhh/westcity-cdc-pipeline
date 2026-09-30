@@ -1,0 +1,197 @@
+# =============================================================================
+# West City Bank – event-driven integration prototype (UTS 32113 Assignment 2)
+#
+# Services: postgres (+ CloudBeaver editor), kafka, connect (Debezium),
+#           connect-init (registers the outbox connector once, then exits).
+# Flow:     core_banking.outbox -> Debezium -> Kafka topics
+#           bank.customer.events / bank.account.events
+#
+# Start:            docker compose up -d
+# Rebuild data:     docker compose down
+#                   docker volume rm westcity_pgdata westcity_kafkadata
+#                   docker compose up -d
+#                   (reset Postgres and Kafka TOGETHER: Debezium's saved
+#                   position in Kafka must match the database. CloudBeaver's
+#                   saved connection is kept.)
+# Open psql:        docker compose exec postgres psql -U westcity_admin -d core_banking
+# From your Mac:    localhost:5433, user westcity_admin, password lab_admin
+# Read events:      docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+#                     --bootstrap-server kafka:29092 --topic bank.account.events \
+#                     --from-beginning --property print.key=true
+# =============================================================================
+name: westcity
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 15 (same major version as the course lab environment).
+  # One container holds all five databases: core_banking, identity_fraud, crm,
+  # loyalty and westcity_dw (a stated lab simplification).
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15.18
+    command:
+      - postgres
+      # Needed later by Debezium (change data capture): 'logical' makes the
+      # write-ahead log carry row-level changes it can read.
+      - -c
+      - wal_level=logical
+      # One replication slot / WAL sender per Debezium connector, with headroom.
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+      # Business time zone (CLAUDE.md): Australia/Sydney.
+      - -c
+      - timezone=Australia/Sydney
+    environment:
+      # LAB-ONLY credentials, hard-coded to keep the prototype simple.
+      POSTGRES_USER: westcity_admin
+      POSTGRES_PASSWORD: lab_admin
+      POSTGRES_DB: postgres
+      TZ: Australia/Sydney
+    ports:
+      - "5433:5432"
+    volumes:
+      # Database files live in a Docker volume, not in the project folder:
+      # the project is in OneDrive, and syncing live database files corrupts them.
+      - pgdata:/var/lib/postgresql/data
+      # On an EMPTY database, Postgres runs every .sql file in this folder in
+      # name order (01_..., 02_...), stopping at the first error.
+      # It does not look inside subfolders, so sql/ stays flat.
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U westcity_admin -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # CloudBeaver: web SQL editor for the databases above.
+  # Open http://localhost:8978 and add a PostgreSQL connection:
+  #   host postgres, port 5432, user westcity_admin, password lab_admin
+  # (inside Docker the host is "postgres" and the port is 5432, not 5433).
+  # ---------------------------------------------------------------------------
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:latest
+    ports:
+      - "8978:8978"
+    volumes:
+      # Saved connections and settings. A Docker volume, not a project folder,
+      # so OneDrive does not sync files while CloudBeaver is writing them.
+      - cloudbeaver:/opt/cloudbeaver/workspace
+      # credentials for admin: cbadmin/Studentadmin1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Kafka: one broker in KRaft mode (no ZooKeeper). Lab simplification:
+  # a single broker, so every topic has replication factor 1.
+  # Other containers use kafka:29092; tools on your Mac use localhost:9092.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:29093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      CLUSTER_ID: V2VzdENpdHlMYWJLYWZrYQ          # fixed id, so the data volume survives restarts
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Kafka Connect with Debezium: reads changes from Postgres' write-ahead log
+  # and writes them to Kafka. Connector configs are sent to its REST API
+  # (port 8083); it stores them, and its read position, in Kafka topics.
+  # ---------------------------------------------------------------------------
+  connect:
+    image: quay.io/debezium/connect:3.6.3.Final
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: westcity-connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      HEAP_OPTS: -Xms256m -Xmx768m
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # connect-init: runs once. Sends connectors/core-outbox.json to Kafka Connect
+  # (PUT = create the connector, or update it if it already exists), then exits.
+  #
+  # What connectors/core-outbox.json says:
+  #   - read core_banking through the publication dbz_outbox_publication
+  #     (created in sql/03_outbox_triggers.sql, outbox table only), using the
+  #     replication slot "debezium_outbox" to remember its position
+  #   - snapshot.mode=initial: on first start, also send the rows already in
+  #     the outbox, then stream every new row
+  #   - EventRouter transform (Debezium's outbox pattern support) turns each
+  #     outbox row into a clean business event:
+  #       topic   = bank.<aggregatetype>.events  (bank.account.events, bank.customer.events)
+  #       key     = aggregateid                  (account_id / customer_id)
+  #       value   = payload, as plain JSON       (docs/event-contract.md)
+  #       headers = id, type, event_version, tx_id
+  #   - new topics get 3 partitions: all events of one account/customer share
+  #     a partition, so they stay in order
+  # ---------------------------------------------------------------------------
+  connect-init:
+    image: curlimages/curl:8.22.0
+    command:
+      - -sS
+      - -f
+      - -X
+      - PUT
+      - -H
+      - "Content-Type: application/json"
+      - --data
+      - "@/connectors/core-outbox.json"
+      - http://connect:8083/connectors/core-outbox/config
+    volumes:
+      - ./connectors:/connectors:ro
+    depends_on:
+      connect:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
+  cloudbeaver:
+  kafkadata:

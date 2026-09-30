@@ -1,0 +1,34 @@
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+  "database.hostname": "postgres",
+  "database.port": "5432",
+  "database.user": "westcity_admin",
+  "database.password": "lab_admin",
+  "database.dbname": "core_banking",
+  "topic.prefix": "core_banking",
+
+  "plugin.name": "pgoutput",
+  "publication.name": "dbz_outbox_publication",
+  "publication.autocreate.mode": "disabled",
+  "slot.name": "debezium_outbox",
+  "table.include.list": "public.outbox",
+  "snapshot.mode": "initial",
+  "tombstones.on.delete": "false",
+  "extended.headers.enabled": "false",
+
+  "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+
+  "transforms": "outbox",
+  "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+  "transforms.outbox.route.by.field": "aggregatetype",
+  "transforms.outbox.route.topic.replacement": "bank.${routedByValue}.events",
+  "transforms.outbox.table.field.event.key": "aggregateid",
+  "transforms.outbox.table.expand.json.payload": "true",
+  "transforms.outbox.table.fields.additional.placement": "type:header:type,event_version:header:event_version,tx_id:header:tx_id",
+
+  "topic.creation.default.partitions": "3",
+  "topic.creation.default.replication.factor": "1"
+}
