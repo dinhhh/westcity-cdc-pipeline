@@ -12,11 +12,7 @@
 --   westcity_dw     integrated data warehouse (staging, raw_vault, mart, ops)
 -- All five share one PostgreSQL container: a stated lab simplification.
 -- In production each system would have its own server.
--- =============================================================================
 
--- -----------------------------------------------------------------------------
--- 1. Databases. UTF8 encoding; template0 gives a clean, predictable copy.
--- -----------------------------------------------------------------------------
 CREATE DATABASE core_banking   ENCODING 'UTF8' TEMPLATE template0;
 CREATE DATABASE identity_fraud ENCODING 'UTF8' TEMPLATE template0;
 CREATE DATABASE crm            ENCODING 'UTF8' TEMPLATE template0;
