@@ -19,20 +19,17 @@ CREATE DATABASE crm            ENCODING 'UTF8' TEMPLATE template0;
 CREATE DATABASE loyalty        ENCODING 'UTF8' TEMPLATE template0;
 CREATE DATABASE westcity_dw    ENCODING 'UTF8' TEMPLATE template0;
 
--- -----------------------------------------------------------------------------
 -- 2. Business time zone. Timestamps are stored as timestamptz (absolute
---    moments in time); this setting controls how they are shown and how
---    business dates are derived. West City uses Australia/Sydney.
--- -----------------------------------------------------------------------------
+--    moments in time); 
+
 ALTER DATABASE core_banking   SET timezone = 'Australia/Sydney';
 ALTER DATABASE identity_fraud SET timezone = 'Australia/Sydney';
 ALTER DATABASE crm            SET timezone = 'Australia/Sydney';
 ALTER DATABASE loyalty        SET timezone = 'Australia/Sydney';
 ALTER DATABASE westcity_dw    SET timezone = 'Australia/Sydney';
 
--- -----------------------------------------------------------------------------
+
 -- 3. Descriptions, visible with \l+ in psql.
--- -----------------------------------------------------------------------------
 COMMENT ON DATABASE core_banking   IS 'Core banking: system of record for customers and accounts; publishes events via the outbox';
 COMMENT ON DATABASE identity_fraud IS 'Identity verification and fraud: devices, onboarding sessions, KYC, watchlist screening, risk assessments';
 COMMENT ON DATABASE crm            IS 'CRM: contacts, financial accounts and cases, synced from core_banking events';

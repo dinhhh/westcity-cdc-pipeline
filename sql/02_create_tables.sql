@@ -1,5 +1,4 @@
--- =============================================================================
--- File:     sql/02_create_tables.sql
+
 -- Purpose:  Create every table of the West City Bank data model, exactly as
 --           designed in westcity-er-model-source.md (sections 1-7).
 -- Runs:     Automatically, once, when the Postgres container starts with an
@@ -20,10 +19,8 @@
 --     later scripts (03 to 09).
 -- =============================================================================
 
-
--- #############################################################################
 -- 1. core_banking – system of record for customers and accounts (ER section 1)
--- #############################################################################
+
 \connect core_banking
 
 -- Branch: where an account is domiciled. BSB = 6-digit bank-state-branch code.
@@ -188,13 +185,11 @@ CREATE TABLE processed_event (
     processed_at timestamptz NOT NULL DEFAULT now()
 );
 
-
--- #############################################################################
 -- 3. crm – customer relationship management (ER section 3)
 --    Kept to the columns the dashboards use (docs/demo-flow.md 2.3, 5 and 6)
 --    plus the keys and sync columns the pipeline needs. The rules that fill
 --    them are in sql/04_crm_onboarding.sql.
--- #############################################################################
+
 \connect crm
 
 -- CRM contact: one row per customer.
@@ -243,11 +238,9 @@ CREATE TABLE processed_event (
 );
 
 
--- #############################################################################
 -- 4. loyalty – rewards and loyalty platform (ER section 4)
 --    Kept to the columns the dashboards use (docs/demo-flow.md 2.4, 5 and 6)
 --    plus keys and sync columns. The rules are in sql/06_loyalty_onboarding.sql.
--- #############################################################################
 \connect loyalty
 
 -- Loyalty offer: the welcome offers (reference data, loaded by
