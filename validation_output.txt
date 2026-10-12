@@ -1,0 +1,107 @@
+Pager usage is off.
+=== Section 3.1: core_banking ===
+You are now connected to database "core_banking" as user "westcity_admin".
+ source_database | expected_tables | actual_tables |                                 table_names                                  | result 
+-----------------+-----------------+---------------+------------------------------------------------------------------------------+--------
+ core_banking    |               7 |             7 | account, account_holder, branch, customer, customer_address, outbox, product | PASS
+(1 row)
+
+ source_database | expected_local_fks | actual_local_fks | result 
+-----------------+--------------------+------------------+--------
+ core_banking    |                  5 |                5 | PASS
+(1 row)
+
+         indexname         |                                                                   indexdef                                                                    
+---------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------
+ ux_account_holder_primary | CREATE UNIQUE INDEX ux_account_holder_primary ON public.account_holder USING btree (account_id) WHERE ((holder_role)::text = 'PRIMARY'::text)
+(1 row)
+
+ total_accounts | invalid_accounts | result 
+----------------+------------------+--------
+             10 |                0 | PASS
+(1 row)
+
+ account_id | primary_count 
+------------+---------------
+(0 rows)
+
+ active_without_activation_timestamp 
+-------------------------------------
+                                   0
+(1 row)
+
+BEGIN
+NOTICE:  PASS: missing local parent rejected by FK
+DO
+ROLLBACK
+=== Section 3.1: identity_fraud ===
+NOTICE:  PASS: second PRIMARY rejected by partial unique index
+You are now connected to database "identity_fraud" as user "westcity_admin".
+ source_database | expected_tables | actual_tables |                                             table_names                                             | result 
+-----------------+-----------------+---------------+-----------------------------------------------------------------------------------------------------+--------
+ identity_fraud  |               6 |             6 | device, kyc_verification, onboarding_session, processed_event, risk_assessment, watchlist_screening | PASS
+(1 row)
+
+ source_database | expected_local_fks | actual_local_fks | result 
+-----------------+--------------------+------------------+--------
+ identity_fraud  |                  1 |                1 | PASS
+(1 row)
+
+ risk_assessments | invalid_scores 
+------------------+----------------
+               10 |              0
+(1 row)
+
+BEGIN
+NOTICE:  PASS: duplicate KYC attempt rejected
+NOTICE:  PASS: out-of-range risk score rejected
+DO
+ROLLBACK
+=== Section 3.1: crm ===
+You are now connected to database "crm" as user "westcity_admin".
+ source_database | expected_tables | actual_tables |                          table_names                          | result 
+-----------------+-----------------+---------------+---------------------------------------------------------------+--------
+ crm             |               4 |             4 | crm_case, crm_contact, crm_financial_account, processed_event | PASS
+(1 row)
+
+ source_database | expected_local_fks | actual_local_fks | result 
+-----------------+--------------------+------------------+--------
+ crm             |                  2 |                2 | PASS
+(1 row)
+
+ contacts | accounts | cases 
+----------+----------+-------
+       10 |       10 |     9
+(1 row)
+
+BEGIN
+NOTICE:  PASS: duplicate welcome call rejected
+DO
+ROLLBACK
+=== Section 3.1: loyalty ===
+You are now connected to database "loyalty" as user "westcity_admin".
+ source_database | expected_tables | actual_tables |                         table_names                          | result 
+-----------------+-----------------+---------------+--------------------------------------------------------------+--------
+ loyalty         |               4 |             4 | loyalty_member, loyalty_offer, member_offer, processed_event | PASS
+(1 row)
+
+ source_database | expected_local_fks | actual_local_fks | result 
+-----------------+--------------------+------------------+--------
+ loyalty         |                  2 |                2 | PASS
+(1 row)
+
+ members | awards 
+---------+--------
+       8 |      8
+(1 row)
+
+ fallback_offers 
+-----------------
+               1
+(1 row)
+
+BEGIN
+DO
+ROLLBACK
+=== Section 3.1 checks complete. ===
+NOTICE:  PASS: duplicate account award rejected
