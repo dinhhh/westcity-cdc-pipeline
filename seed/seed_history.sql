@@ -1,50 +1,14 @@
--- =============================================================================
--- File:     seed/seed_history.sql
--- Purpose:  Create the synthetic history: :seed_count new customers who each
---           open one account on a random day in the last 90 days. The
---           accounts go through the REAL pipeline, like the live demo:
---             identity_fraud rows -> core_banking insert -> outbox ->
---             Debezium -> Kafka -> fraud / CRM / loyalty consumers
---
--- Run it AFTER `docker compose up -d --build`, once everything is running:
---   1. docker compose exec -T postgres psql -U westcity_admin -d core_banking < seed/seed_history.sql
---   2. wait until the fraud consumer has scored the new accounts
---        docker compose logs -f consumer-fraud
---   3. apply the decisions (APPROVE -> ACTIVE, DECLINE -> REJECTED):
---        docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/apply_decisions.sql
---   Running it again ADDS another :seed_count customers (new ids).
---
--- How the random data is made: every field is a random pick from a
--- HARD-CODED LIST (names, ages, suburbs, products, ...). A list can carry
--- weights, which is how the percentages of docs/demo-flow.md 2.1 and 2.5
--- are met, e.g. channel MOBILE 70 / WEB 20 / BRANCH 10.
---
--- The script plays the MOBILE APP: the app writes the identity checks
--- (device, session, KYC, watchlist) first, then asks core banking to open
--- the account. It spans two databases, so it runs in psql (\connect,
--- \gset), not in CloudBeaver.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 
 -- HOW MANY customers / accounts to create. Increase this for more history
 -- (the spec asks for about 2,000).
 \set seed_count 10
 
-
--- #############################################################################
--- 1. Generate the new customers (in core_banking, where the ids come from)
--- #############################################################################
 \connect core_banking
 
 -- Same data on every fresh rebuild (docs/demo-flow.md 3).
 SELECT setseed(0.42);
 
--- pick(choices, weights): returns one of the choices at random.
---   pg_temp.pick(ARRAY['A','B','C'])                 all equally likely
---   pg_temp.pick(ARRAY['A','B','C'], ARRAY[70,20,10]) A 70%, B 20%, C 10%
--- pg_temp = the function only exists for this connection, so the seed
--- leaves nothing behind in core_banking.
 CREATE FUNCTION pg_temp.pick(choices text[], weights integer[] DEFAULT NULL)
 RETURNS text
 LANGUAGE plpgsql
@@ -70,9 +34,9 @@ $$;
 -- One row per new customer, every field picked from a hard-coded list.
 CREATE TEMP TABLE new_customer AS
 WITH day_list AS (
-    -- The last 90 days (up to yesterday) and how likely each one is:
-    -- weight 100 on the first day rising to 130 on the last (about 25%
-    -- more openings per week by the end), times 0.6 at weekends.
+-- The last 90 days (up to yesterday) and how likely each one is:
+-- weight 100 on the first day rising to 130 on the last (about 25%
+-- more openings per week by the end), times 0.6 at weekends.
     SELECT array_agg(d::date::text ORDER BY d) AS days,
            array_agg(round((100 + 30 * (d::date - (current_date - 90)) / 89.0)
                            * CASE WHEN extract(isodow FROM d) >= 6 THEN 0.6 ELSE 1 END)::int
@@ -161,11 +125,6 @@ FROM picked p;
 -- carried to the other database after \connect.
 SELECT json_agg(c ORDER BY c.customer_id) AS batch FROM new_customer c \gset
 
-
--- #############################################################################
--- 2. identity_fraud: the app's identity checks, written BEFORE the account
---    is opened, so the fraud consumer finds them when AccountOpened arrives
--- #############################################################################
 \connect identity_fraud
 
 CREATE TEMP TABLE batch AS

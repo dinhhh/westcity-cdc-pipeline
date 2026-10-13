@@ -1,30 +1,3 @@
--- =============================================================================
--- File:     etl/01_extract_bronze.sql
--- Purpose:  EXTRACT: copy new and changed rows from identity_fraud, crm and
---           loyalty into the bronze layer of westcity_dw, unchanged.
---           (core_banking customers and accounts do not need extracting:
---           consumer-dw lands their events in bronze.core_event from Kafka.
---           Only the small core product table is copied here.)
--- Run:      step 1 of 3 (etl/run_all.sql runs all three), any time, as
---           often as needed:
---             docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/01_extract_bronze.sql
---
--- How "only new or changed rows" works (incremental extract):
---   ops.extract_watermark remembers, per source table, the highest id or the
---   latest synced_at copied so far. Each run copies only rows above it, then
---   moves the watermark up. Small reference tables, and tables without a
---   usable watermark column, are copied in full instead.
---   The source tables are read through postgres_fdw (sql/08): in this
---   database, crm.crm_case is the crm_case table of the crm database.
---
--- Lab simplification: an id or time watermark can miss a row whose
--- transaction commits AFTER a later row was already copied. Production would
--- use CDC (log positions) or a safety overlap window.
---
--- The whole script is ONE transaction: if any step fails, nothing is copied
--- and the watermarks do not move, so it can simply be run again.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 \connect westcity_dw
 
@@ -34,11 +7,6 @@ BEGIN;
 INSERT INTO ops.etl_run (job_name, script_version)
 VALUES ('01_extract_bronze', 'v1')
 RETURNING run_id \gset
-
-
--- #############################################################################
--- 1. Full copies (small or without a watermark): replace the bronze copy.
--- #############################################################################
 
 -- core_banking.product: product names for the product dimension.
 TRUNCATE bronze.core_product;
@@ -57,11 +25,6 @@ TRUNCATE bronze.fraud_onboarding_session;
 INSERT INTO bronze.fraud_onboarding_session (session_id, customer_id, device_id, started_at, run_id)
 SELECT session_id, customer_id, device_id, started_at, :run_id
 FROM identity_fraud.onboarding_session;
-
-
--- #############################################################################
--- 2. Insert-only tables: copy rows whose id is above the watermark.
--- #############################################################################
 
 INSERT INTO bronze.fraud_device (device_id, device_fingerprint, run_id)
 SELECT device_id, device_fingerprint, :run_id
@@ -95,13 +58,6 @@ FROM crm.crm_case
 WHERE case_id > (SELECT last_id FROM ops.extract_watermark
                  WHERE source_table = 'crm.crm_case');
 
-
--- #############################################################################
--- 3. Updatable tables: copy rows changed (synced_at) after the watermark.
---    A row changed twice between runs is copied once, in its latest state;
---    a row changed again later is copied again (silver keeps the history).
--- #############################################################################
-
 INSERT INTO bronze.crm_contact (contact_id, customer_id, segment, source_version, synced_at, run_id)
 SELECT contact_id, customer_id, segment, source_version, synced_at, :run_id
 FROM crm.crm_contact
@@ -130,12 +86,6 @@ FROM loyalty.member_offer
 WHERE synced_at > (SELECT last_ts FROM ops.extract_watermark
                    WHERE source_table = 'loyalty.member_offer');
 
-
--- #############################################################################
--- 4. Move the watermarks up to the highest id / latest time now in bronze.
---    (coalesce keeps the old value when a table has no rows yet.)
--- #############################################################################
-
 UPDATE ops.extract_watermark w
    SET last_id    = coalesce(m.new_id, w.last_id),
        run_id     = :run_id,
@@ -158,11 +108,6 @@ UPDATE ops.extract_watermark w
                ('loyalty.member_offer',      (SELECT max(synced_at) FROM bronze.loyalty_member_offer))
        ) AS m (source_table, new_ts)
  WHERE w.source_table = m.source_table;
-
-
--- #############################################################################
--- 5. Close the run with how many rows were copied, and show it.
--- #############################################################################
 
 CREATE TEMP TABLE copied ON COMMIT DROP AS
           SELECT 'bronze.core_product'              AS bronze_table, count(*) AS rows_copied FROM bronze.core_product              WHERE run_id = :run_id

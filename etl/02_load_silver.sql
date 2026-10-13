@@ -1,27 +1,3 @@
--- =============================================================================
--- File:     etl/02_load_silver.sql
--- Purpose:  TRANSFORM (1/2): load the Data Vault in the silver layer from
---           bronze: hubs (business keys), links (relationships) and
---           satellites (attributes with full history).
--- Run:      step 2 of 3, after etl/01_extract_bronze.sql:
---             docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/02_load_silver.sql
---
--- Safe to run again at any time (idempotent):
---   * a hub or link row is only added if its key is new;
---   * a satellite row is only added if the attributes CHANGED since the
---     latest row for that key (compared through hash_diff). Satellites are
---     never updated or deleted, so silver keeps the full history.
---
--- Hash keys: hk_* = md5 of the business key (e.g. md5('42') for customer 42).
--- hash_diff = md5 of ROW(attributes)::text, e.g. md5('(Mia,Nguyen,NSW,t)').
--- (ROW(...)::text keeps an empty slot for a NULL, so moving a value from one
--- column to another always changes the hash.)
---
--- Data quality: rows that fail a rule are moved to ops.dq_quarantine with
--- the reason, and are NOT loaded.
--- One transaction: if any step fails, nothing is loaded.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 \connect westcity_dw
 
@@ -30,13 +6,6 @@ BEGIN;
 INSERT INTO ops.etl_run (job_name, script_version)
 VALUES ('02_load_silver', 'v1')
 RETURNING run_id \gset
-
-
--- #############################################################################
--- 1. Current state of every core_banking customer and account, read from
---    the Kafka events in bronze.core_event. Each event carries the full
---    snapshot, so the event with the highest version is the current state.
--- #############################################################################
 
 CREATE TEMP TABLE core_customer ON COMMIT DROP AS
 SELECT DISTINCT ON (aggregate_id)
@@ -69,13 +38,6 @@ FROM bronze.core_event
 WHERE aggregate_type = 'account'
 ORDER BY aggregate_id, aggregate_version DESC;
 
-
--- #############################################################################
--- 2. Data-quality rules. Each statement MOVES the failing rows out of the
---    batch (DELETE ... RETURNING) and into ops.dq_quarantine.
--- #############################################################################
-
--- Rule: every account has exactly one PRIMARY holder (who owns it).
 WITH rejected AS (
     DELETE FROM core_account a
     WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(a.holders) h
@@ -88,7 +50,6 @@ SELECT :run_id, 'bronze.core_event', 'account ' || account_id,
 FROM rejected
 ON CONFLICT (source_table, record_key, rule_name) DO NOTHING;
 
--- Rule: customers are adults (18 or older) and have a date of birth.
 WITH rejected AS (
     DELETE FROM core_customer c
     WHERE c.date_of_birth IS NULL
@@ -100,14 +61,6 @@ SELECT :run_id, 'bronze.core_event', 'customer ' || customer_id,
        'CUSTOMER_IS_ADULT', 'date of birth missing or customer younger than 18', payload
 FROM rejected
 ON CONFLICT (source_table, record_key, rule_name) DO NOTHING;
-
-
--- #############################################################################
--- 3. Hubs: one row per business key, added the first time it is seen.
---    Customers and accounts come from core_banking, the system of record.
---    Rows from other systems are only loaded for keys already in a hub
---    (the joins below); anything that arrives early loads on a later run.
--- #############################################################################
 
 INSERT INTO silver.hub_customer (hk_customer, customer_id, load_dts, record_source, run_id)
 SELECT md5(customer_id::text), customer_id, now(), 'core_banking (Kafka)', :run_id
@@ -129,12 +82,6 @@ SELECT DISTINCT md5(device_fingerprint), device_fingerprint, now(), 'identity_fr
 FROM bronze.fraud_device
 ON CONFLICT (hk_device) DO NOTHING;
 
-
--- #############################################################################
--- 4. Links: one row per relationship, added the first time it is seen.
--- #############################################################################
-
--- Account <-> customer (holders), from the account event's holder list.
 INSERT INTO silver.link_account_holder (hk_account_holder, hk_account, hk_customer,
                                         holder_role, load_dts, record_source, run_id)
 SELECT md5(a.account_id || '|' || hc.customer_id),
@@ -147,7 +94,6 @@ CROSS JOIN LATERAL jsonb_array_elements(a.holders) AS h
 JOIN silver.hub_customer hc ON hc.customer_id = (h ->> 'customer_id')::bigint
 ON CONFLICT (hk_account_holder) DO NOTHING;
 
--- Account <-> product.
 INSERT INTO silver.link_account_product (hk_account_product, hk_account, hk_product,
                                          load_dts, record_source, run_id)
 SELECT md5(a.account_id || '|' || a.product_code),
@@ -158,7 +104,6 @@ FROM core_account a
 JOIN silver.hub_product hp ON hp.product_code = a.product_code
 ON CONFLICT (hk_account_product) DO NOTHING;
 
--- Customer <-> device, from the onboarding sessions (identity_fraud).
 INSERT INTO silver.link_customer_device (hk_customer_device, hk_customer, hk_device,
                                          load_dts, record_source, run_id)
 SELECT DISTINCT
@@ -172,15 +117,6 @@ JOIN silver.hub_customer hc ON hc.customer_id = s.customer_id
 JOIN silver.hub_device hd   ON hd.device_fingerprint = d.device_fingerprint
 ON CONFLICT (hk_customer_device) DO NOTHING;
 
-
--- #############################################################################
--- 5. Satellites. Same pattern for each one:
---      new = the current attributes of every key, with their hash_diff
---      insert the rows of "new" whose hash_diff differs from the LATEST
---      satellite row for that key (or that have no satellite row yet).
--- #############################################################################
-
--- 5a. Customer details (core_banking).
 INSERT INTO silver.sat_customer_details (hk_customer, load_dts, hash_diff, first_name, last_name,
                                          date_of_birth, residential_state, marketing_consent,
                                          source_version, src_commit_ts, record_source, run_id)
@@ -196,7 +132,6 @@ WHERE new.hash_diff IS DISTINCT FROM
       (SELECT s.hash_diff FROM silver.sat_customer_details s
        WHERE s.hk_customer = new.hk_customer ORDER BY s.load_dts DESC LIMIT 1);
 
--- 5b. Account state (core_banking).
 INSERT INTO silver.sat_account_state (hk_account, load_dts, hash_diff, account_status, channel,
                                       opened_at, activated_at, source_version, src_commit_ts,
                                       record_source, run_id)
@@ -211,7 +146,6 @@ WHERE new.hash_diff IS DISTINCT FROM
       (SELECT s.hash_diff FROM silver.sat_account_state s
        WHERE s.hk_account = new.hk_account ORDER BY s.load_dts DESC LIMIT 1);
 
--- 5c. Product details (core_banking.product).
 INSERT INTO silver.sat_product_details (hk_product, load_dts, hash_diff, product_name, product_type,
                                         record_source, run_id)
 SELECT new.*, 'core_banking.product', :run_id
@@ -224,9 +158,6 @@ WHERE new.hash_diff IS DISTINCT FROM
       (SELECT s.hash_diff FROM silver.sat_product_details s
        WHERE s.hk_product = new.hk_product ORDER BY s.load_dts DESC LIMIT 1);
 
--- 5d. KYC and watchlist (identity_fraud), per customer:
---     the latest KYC attempt's result, the number of attempts, and the
---     latest watchlist result.
 INSERT INTO silver.sat_customer_kyc (hk_customer, load_dts, hash_diff, kyc_result, kyc_attempts,
                                      watchlist_status, record_source, run_id)
 SELECT new.*, 'identity_fraud', :run_id
@@ -248,7 +179,6 @@ WHERE new.hash_diff IS DISTINCT FROM
       (SELECT s.hash_diff FROM silver.sat_customer_kyc s
        WHERE s.hk_customer = new.hk_customer ORDER BY s.load_dts DESC LIMIT 1);
 
--- 5e. Risk assessment (identity_fraud), per account.
 INSERT INTO silver.sat_account_risk (hk_account, load_dts, hash_diff, risk_score, risk_band, decision,
                                      reason_codes, assessed_at, record_source, run_id)
 SELECT new.*, 'identity_fraud', :run_id
@@ -265,9 +195,6 @@ WHERE new.hash_diff IS DISTINCT FROM
       (SELECT s.hash_diff FROM silver.sat_account_risk s
        WHERE s.hk_account = new.hk_account ORDER BY s.load_dts DESC LIMIT 1);
 
--- 5f. CRM view of the account (crm): the customer's segment, the status
---     and lifecycle stage CRM holds, and the welcome-call task status.
---     Bronze is an append log, so take the latest copy of each CRM row.
 INSERT INTO silver.sat_account_crm (hk_account, load_dts, hash_diff, segment, crm_account_status,
                                     lifecycle_stage, welcome_task_status, record_source, run_id)
 SELECT new.*, 'crm', :run_id
@@ -291,8 +218,6 @@ WHERE new.hash_diff IS DISTINCT FROM
       (SELECT s.hash_diff FROM silver.sat_account_crm s
        WHERE s.hk_account = new.hk_account ORDER BY s.load_dts DESC LIMIT 1);
 
--- 5g. Loyalty view of the account (loyalty): member status and tier of the
---     account's member, the welcome offer's points and its redemption.
 INSERT INTO silver.sat_account_loyalty (hk_account, load_dts, hash_diff, member_status, tier,
                                         bonus_points, redemption_status, record_source, run_id)
 SELECT new.*, 'loyalty', :run_id
@@ -312,11 +237,6 @@ FROM (SELECT ha.hk_account,
 WHERE new.hash_diff IS DISTINCT FROM
       (SELECT s.hash_diff FROM silver.sat_account_loyalty s
        WHERE s.hk_account = new.hk_account ORDER BY s.load_dts DESC LIMIT 1);
-
-
--- #############################################################################
--- 6. Close the run: rows added to silver by this run, and rows quarantined.
--- #############################################################################
 
 CREATE TEMP TABLE loaded ON COMMIT DROP AS
           SELECT 'silver.hub_customer'         AS silver_table, count(*) AS rows_added FROM silver.hub_customer         WHERE run_id = :run_id

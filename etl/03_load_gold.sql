@@ -1,21 +1,3 @@
--- =============================================================================
--- File:     etl/03_load_gold.sql
--- Purpose:  TRANSFORM (2/2) + LOAD: build the star schema in the gold layer
---           from the Data Vault (silver): the dimensions, then
---           gold.fact_account_opening = ONE combined row per account with
---           what every system added (docs/demo-flow.md section 5).
---           The dashboard views (sql/09) read these tables.
--- Run:      step 3 of 3, after etl/02_load_silver.sql:
---             docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/03_load_gold.sql
---
--- Safe to run again at any time:
---   * dimensions: new members are added; product names are updated;
---     customers are SCD type 2 (a change closes the old row, adds a new one);
---   * the fact table is REBUILT in full from silver each run (it is small,
---     and silver keeps the history, so nothing is lost).
--- One transaction: the dashboards never see a half-built fact table.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 \connect westcity_dw
 
@@ -24,12 +6,6 @@ BEGIN;
 INSERT INTO ops.etl_run (job_name, script_version)
 VALUES ('03_load_gold', 'v1')
 RETURNING run_id \gset
-
-
--- #############################################################################
--- 1. The CURRENT version of every satellite: the latest row per key.
---    (Silver keeps every version; the star schema shows the current state.)
--- #############################################################################
 
 CREATE TEMP TABLE cur_customer ON COMMIT DROP AS
 SELECT DISTINCT ON (s.hk_customer) h.customer_id, s.*
@@ -70,12 +46,7 @@ SELECT l.hk_customer,
 FROM silver.link_customer_device l
 JOIN silver.hub_device d USING (hk_device);
 
-
--- #############################################################################
--- 2. Dimensions
--- #############################################################################
-
--- dim_date: every day from the first account opening up to today.
+--dim_date: every day from the first account opening up to today.
 INSERT INTO gold.dim_date (date_key, calendar_date, day_of_week, week_start,
                            month, quarter, year, is_business_day)
 SELECT to_char(d, 'YYYYMMDD')::integer,
@@ -91,7 +62,7 @@ FROM generate_series((SELECT min(opened_at)::date FROM cur_account), current_dat
 CROSS JOIN LATERAL (SELECT g::date AS d) AS day
 ON CONFLICT (date_key) DO NOTHING;
 
--- dim_product: new products are added, names kept up to date (SCD type 1).
+--dim_product: new products are added, names kept up to date (SCD type 1).
 INSERT INTO gold.dim_product (product_code, product_name, product_type)
 SELECT h.product_code, p.product_name, p.product_type
 FROM silver.hub_product h
@@ -100,13 +71,12 @@ ON CONFLICT (product_code) DO UPDATE
    SET product_name = EXCLUDED.product_name,
        product_type = EXCLUDED.product_type;
 
--- dim_channel: every channel seen.
+--dim_channel: every channel seen.
 INSERT INTO gold.dim_channel (channel)
 SELECT DISTINCT channel FROM cur_account WHERE channel IS NOT NULL
 ON CONFLICT (channel) DO NOTHING;
 
--- dim_customer, SCD type 2:
---   (a) close the current row of customers whose details changed;
+--dim_customer, SCD type 2:
 UPDATE gold.dim_customer d
    SET valid_to   = now(),
        is_current = false
@@ -117,7 +87,6 @@ UPDATE gold.dim_customer d
        IS DISTINCT FROM
        (c.first_name || ' ' || c.last_name, c.residential_state, c.marketing_consent);
 
---   (b) add a current row for new customers and for the ones just closed.
 INSERT INTO gold.dim_customer (customer_id, customer_name, residential_state,
                                marketing_consent, valid_from)
 SELECT c.customer_id,
@@ -128,14 +97,6 @@ SELECT c.customer_id,
 FROM cur_customer c
 WHERE NOT EXISTS (SELECT 1 FROM gold.dim_customer d
                   WHERE d.customer_id = c.customer_id AND d.is_current);
-
-
--- #############################################################################
--- 3. Fact: rebuild gold.fact_account_opening, one row per account,
---    combining core banking, identity & fraud, CRM and loyalty.
---    LEFT JOINs: an account the other systems have not processed yet still
---    appears, with their columns empty (e.g. risk_decision NULL).
--- #############################################################################
 
 TRUNCATE gold.fact_account_opening;
 
@@ -210,11 +171,6 @@ LEFT JOIN cur_crm cr              ON cr.hk_account = ha.hk_account
 LEFT JOIN cur_loyalty l           ON l.hk_account = ha.hk_account
 -- age at opening, in whole years
 CROSS JOIN LATERAL (SELECT date_part('year', age(a.opened_at::date, c.date_of_birth))::integer AS years) AS age;
-
-
--- #############################################################################
--- 4. Close the run.
--- #############################################################################
 
 UPDATE ops.etl_run
    SET finished_at = now(),
