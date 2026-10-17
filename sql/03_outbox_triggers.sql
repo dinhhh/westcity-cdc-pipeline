@@ -1,47 +1,13 @@
--- =============================================================================
--- File:     sql/03_outbox_triggers.sql
--- Purpose:  Make core_banking publish business events through the
---           TRANSACTIONAL OUTBOX: every change to a customer or account also
---           writes one row to the outbox table, in the SAME transaction.
---           Debezium later reads new outbox rows from the write-ahead log and
---           sends them to Kafka. Debezium only READS; these triggers WRITE.
--- Runs:     Automatically after 02_create_tables.sql on an empty data volume.
--- Design:   CLAUDE.md (core_banking) and docs/event-contract.md (payloads).
---
--- What this file creates (all in core_banking):
---   1. Payload builders  customer_snapshot(), account_snapshot()
---   2. Outbox writer     write_outbox()
---   3. Version triggers  +1 on customer.version / account.version when a
---                        business column changes
---   4. Event triggers    customer INSERT  -> CustomerCreated
---                        customer UPDATE  -> CustomerDetailsUpdated
---                        account  INSERT  -> AccountOpened
---                        account  status  -> AccountActivated / AccountRejected
---   5. Publication       dbz_outbox_publication: ONLY the outbox table, which
---                        is all Debezium is allowed to see in this database.
---
--- Why some triggers are DEFERRED: a new account is saved as several rows
--- (account, then account_holder; customer, then customer_address). A normal
--- trigger on account fires straight after the account row, before the holder
--- rows exist, so the event would have no holders. A DEFERRED constraint
--- trigger waits until COMMIT, when every row of the transaction is in place.
---
--- Not in this file yet (added in later steps):
---   open_account()          one-call account opening, for the demo
---   emit_account_snapshot() repair event for reconciliation (UC3)
---   events for address-only changes or for holders added to an existing account
--- =============================================================================
+-- core_banking outbox: triggers write an event row in the same transaction
+-- as each customer/account change. Debezium reads the outbox into Kafka.
+-- Some triggers are DEFERRED so they see rows added later in the transaction.
 
 \connect core_banking
 
 
--- #############################################################################
--- 1. Payload builders: the "data" part of each event (docs/event-contract.md 3)
---    Events carry FULL current state, so a consumer can apply any single
---    event without having seen the earlier ones.
--- #############################################################################
+-- 1. Payload builders (full current state)
 
--- Customer snapshot: the customer row plus the current residential address.
+-- Customer + current residential address
 CREATE FUNCTION customer_snapshot(p_customer_id bigint)
 RETURNS jsonb
 LANGUAGE sql STABLE
@@ -71,11 +37,7 @@ AS $$
     WHERE c.customer_id = p_customer_id;
 $$;
 
--- Account snapshot: the account row, its BSB, and every holder WITH a copy of
--- that holder's customer snapshot. The copy matters because Kafka keeps no
--- order between the customer topic and the account topic: a consumer may see
--- AccountOpened before CustomerCreated, and can still create the customer
--- from this copy.
+-- Account + BSB + holders (with a customer copy, topic order isn't guaranteed)
 CREATE FUNCTION account_snapshot(p_account_id bigint)
 RETURNS jsonb
 LANGUAGE sql STABLE
@@ -109,13 +71,9 @@ AS $$
 $$;
 
 
--- #############################################################################
--- 2. Outbox writer: wraps the data in the standard envelope
---    (docs/event-contract.md section 2) and inserts one outbox row.
---    The envelope's event_id is the same uuid as outbox.id.
--- #############################################################################
-CREATE FUNCTION write_outbox(p_aggregatetype text,     -- 'customer' or 'account' (picks the Kafka topic)
-                             p_aggregateid   bigint,   -- customer_id or account_id (the Kafka key)
+-- 2. Outbox writer (adds the event envelope)
+CREATE FUNCTION write_outbox(p_aggregatetype text,     -- picks Kafka topic
+                             p_aggregateid   bigint,   -- Kafka key
                              p_type          text,     -- event type, e.g. 'AccountOpened'
                              p_version       integer,  -- aggregate version after the change
                              p_data          jsonb)    -- customer or account snapshot
@@ -132,7 +90,7 @@ BEGIN
             p_type,
             p_version,
             jsonb_build_object(
-                'schema_version',    1,                -- version of the event contract
+                'schema_version',    1,                -- contract version
                 'event_id',          v_event_id,
                 'event_type',        p_type,
                 'aggregate_type',    p_aggregatetype,
@@ -145,13 +103,7 @@ END;
 $$;
 
 
--- #############################################################################
--- 3. Version triggers: add 1 to the aggregate version whenever a BUSINESS
---    column changes. Consumers compare versions ("versioned upsert") so an
---    older event can never overwrite newer data.
---    The WHEN clause on each trigger decides what counts as a business change,
---    so the functions themselves stay one line.
--- #############################################################################
+-- 3. Version triggers: +1 when a business column changes
 
 CREATE FUNCTION trg_customer_bump_version()
 RETURNS trigger
@@ -196,12 +148,9 @@ CREATE TRIGGER account_bump_version
     EXECUTE FUNCTION trg_account_bump_version();
 
 
--- #############################################################################
--- 4. Event triggers: write the outbox row for each business event.
--- #############################################################################
+-- 4. Event triggers
 
--- 4a. CustomerCreated – DEFERRED to commit, so the residential address
---     inserted later in the same transaction is included.
+-- 4a. CustomerCreated (deferred, includes address)
 CREATE FUNCTION trg_customer_created()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -209,11 +158,11 @@ AS $$
 DECLARE
     v_version integer;
 BEGIN
-    -- Read the version at commit time (it may have changed since the insert).
+    -- Version at commit time
     SELECT version INTO v_version FROM customer WHERE customer_id = NEW.customer_id;
     PERFORM write_outbox('customer', NEW.customer_id, 'CustomerCreated',
                          v_version, customer_snapshot(NEW.customer_id));
-    RETURN NULL;   -- return value of an AFTER trigger is ignored
+    RETURN NULL;   -- ignored for AFTER triggers
 END;
 $$;
 
@@ -223,8 +172,7 @@ CREATE CONSTRAINT TRIGGER customer_created_event
     FOR EACH ROW
     EXECUTE FUNCTION trg_customer_created();
 
--- 4b. CustomerDetailsUpdated – after a business column changes
---     (same condition as the version trigger).
+-- 4b. CustomerDetailsUpdated
 CREATE FUNCTION trg_customer_updated()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -246,8 +194,7 @@ CREATE TRIGGER customer_updated_event
            NEW.marketing_consent, NEW.statement_delivery, NEW.customer_since))
     EXECUTE FUNCTION trg_customer_updated();
 
--- 4c. AccountOpened – DEFERRED to commit, so the account_holder rows
---     inserted after the account row are included.
+-- 4c. AccountOpened (deferred, includes holders)
 CREATE FUNCTION trg_account_opened()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -268,9 +215,7 @@ CREATE CONSTRAINT TRIGGER account_opened_event
     FOR EACH ROW
     EXECUTE FUNCTION trg_account_opened();
 
--- 4d. AccountActivated / AccountRejected – when the status changes to
---     ACTIVE or REJECTED (in the prototype: the simulated fraud decision).
---     Other status changes (e.g. CLOSED) publish nothing in this prototype.
+-- 4d. AccountActivated / AccountRejected
 CREATE FUNCTION trg_account_status_changed()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -294,12 +239,5 @@ CREATE TRIGGER account_status_event
     EXECUTE FUNCTION trg_account_status_changed();
 
 
--- #############################################################################
--- 5. Publication for Debezium: ONLY the outbox table.
---    Debezium streams whatever tables a publication lists. Listing only
---    outbox means internal tables (customer, account, ...) are never exposed
---    directly; other systems only ever see the published business events.
---    The Debezium connector will be configured to use this publication by
---    name instead of creating its own.
--- #############################################################################
+-- 5. Publication for Debezium (outbox only)
 CREATE PUBLICATION dbz_outbox_publication FOR TABLE outbox;

@@ -1,32 +1,15 @@
--- =============================================================================
--- File:     demo/03_trace_account.sql
--- Purpose:  Demo scene 2: follow ONE account through every system, in the
---           order the data travels (docs/demo-flow.md section 7):
---             1. core banking   the account + the events in its outbox
---             2. Kafka          topic / partition / offset of each event
---             3. identity & fraud  signals, score, decision
---             4. CRM            segment, lifecycle stage, welcome-call task
---             5. loyalty        membership, tier, welcome offer
---             6. warehouse      silver history + the gold fact row
---           Each system also shows WHICH events it processed and how many
---           seconds after they were written to the outbox (the
---           processed_event table the consumers keep for idempotency).
--- Run:      the newest account:
---             docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/03_trace_account.sql
---           a given account:
---             docker compose exec -T postgres psql -U westcity_admin -d core_banking -v account_id=2011 < demo/03_trace_account.sql
---           Read-only: safe to run as often as you like, at any stage.
--- =============================================================================
+-- Scene 2: trace one account through every system (read-only).
+-- Run: docker compose exec -T postgres psql -U westcity_admin -d core_banking [-v account_id=2011] < demo/03_trace_account.sql
 
 \set ON_ERROR_STOP on
--- Quiet: no "INSERT 0 1" / "connected to" lines, only the results.
+-- Hide psql noise
 \set QUIET on
 \pset null '-'
 \pset footer off
 
 \connect core_banking
 
--- Which account: the one given with -v account_id=..., else the newest.
+-- Use -v account_id, else the newest account
 \if :{?account_id}
 \else
     SELECT max(account_id) AS account_id FROM account \gset
@@ -34,8 +17,7 @@
 SELECT customer_id FROM account_holder
 WHERE account_id = :account_id AND holder_role = 'PRIMARY' \gset
 
--- Remember this account's outbox events (id, type, time written) in one
--- psql variable, as a VALUES list, to follow them into the other systems.
+-- Save the account's outbox events in a psql variable
 SELECT string_agg(format('(%L::uuid, %L, %L::timestamptz)', id, type, created_at),
                   ', ' ORDER BY created_at, type) AS events
 FROM outbox
@@ -43,7 +25,6 @@ WHERE (aggregatetype = 'account'  AND aggregateid = :'account_id')
    OR (aggregatetype = 'customer' AND aggregateid = :'customer_id') \gset
 
 
--- #############################################################################
 \echo
 \echo '############ 1. CORE BANKING (system of record) ############'
 SELECT a.account_id, c.first_name || ' ' || c.last_name AS customer,
@@ -59,7 +40,6 @@ FROM (VALUES :events) AS e (event_id, type, written_at)
 ORDER BY e.written_at, e.type;
 
 
--- #############################################################################
 \connect westcity_dw
 \echo
 \echo '############ 2. KAFKA (Debezium published each event; consumer-dw recorded where it read it) ############'
@@ -71,7 +51,6 @@ LEFT JOIN bronze.core_event b ON b.event_id = e.event_id
 ORDER BY e.written_at, e.type;
 
 
--- #############################################################################
 \connect identity_fraud
 \echo
 \echo '############ 3. IDENTITY & FRAUD ############'
@@ -97,7 +76,6 @@ FROM (SELECT 1) AS one
 LEFT JOIN risk_assessment r ON r.account_id = :account_id;
 
 
--- #############################################################################
 \connect crm
 \echo
 \echo '############ 4. CRM ############'
@@ -117,7 +95,6 @@ LEFT JOIN crm_contact ct           ON ct.contact_id = fa.contact_id
 LEFT JOIN crm_case cs              ON cs.account_id = fa.account_id;
 
 
--- #############################################################################
 \connect loyalty
 \echo
 \echo '############ 5. LOYALTY ############'
@@ -137,7 +114,6 @@ LEFT JOIN loyalty_member m  ON m.member_id = mo.member_id
 LEFT JOIN loyalty_offer o   ON o.offer_id = mo.offer_id;
 
 
--- #############################################################################
 \connect westcity_dw
 \echo
 \echo '############ 6. DATA WAREHOUSE (filled by etl/run_all.sql) ############'

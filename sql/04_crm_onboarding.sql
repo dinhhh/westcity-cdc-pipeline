@@ -1,49 +1,19 @@
--- =============================================================================
--- File:     sql/04_crm_onboarding.sql
--- Purpose:  CRM enrichment for a customer who is onboarding: when an account
---           reaches CRM, record the customer and account, give the customer a
---           segment and a lifecycle stage, and create a welcome-call task.
---           Applies the rules in docs/demo-flow.md section 2.3.
--- Runs:     Automatically after 03_outbox_triggers.sql on an empty data volume.
---           It only CREATES the function; nothing is inserted here.
---
--- The CRM consumer (consumers/consumer.py crm) reads the account events from
--- Kafka and calls crm_onboard_account(...) once per AccountOpened,
--- AccountActivated and AccountRejected event, passing the event id so
--- repeats are skipped. The 90-day history (seed/seed_history.sql) and the
--- live demo accounts both arrive this way.
---
--- CRM rules (docs/demo-flow.md 2.3):
---   segment          age at opening: STUDENT < 23, YOUNG_PROFESSIONAL 23-35,
---                    FAMILY 36-55, SENIOR > 55
---   lifecycle_stage  REJECTED -> DECLINED
---                    ACTIVE and opened < 30 days ago  -> NEW_ONBOARDING
---                    ACTIVE and opened >= 30 days ago -> ESTABLISHED
---                    PENDING -> UNDER_REVIEW
---   welcome task     crm_case WELCOME_CALL, ONLY for ACTIVE accounts,
---                    opened_at = activated_at + random 0 to 24 hours
---                    (never later than now: a task cannot start in the future)
---   task status      COMPLETED with 85% chance if the task was created more
---                    than 7 days ago, otherwise OPEN
---   declined         crm_financial_account.account_status = REJECTED, no task
---
--- Random values use random(), seeded from the account id at the start of the
--- function. Events arrive in no fixed order, so seeding per account is what
--- makes every rebuild produce the same data.
--- =============================================================================
+-- CRM onboarding: crm_onboard_account() is called by the CRM consumer for
+-- each account event. Sets segment and lifecycle stage, and adds a welcome
+-- call for ACTIVE accounts. Rules: docs/demo-flow.md 2.3.
 
 \connect crm
 
 CREATE FUNCTION crm_onboard_account(
     p_customer_id      bigint,       -- core_banking customer_id (PRIMARY holder)
     p_date_of_birth    date,         -- for the segment
-    p_customer_version integer,      -- core customer.version, for the versioned upsert
+    p_customer_version integer,      -- core customer.version
     p_account_id       bigint,       -- core_banking account_id
     p_account_status   varchar,      -- PENDING / ACTIVE / REJECTED
     p_opened_at        timestamptz,  -- when the account was opened
     p_activated_at     timestamptz,  -- when it became ACTIVE (NULL otherwise)
-    p_account_version  integer,      -- core account.version, for the versioned upsert
-    p_event_id         uuid DEFAULT NULL)  -- Kafka event id (NULL = direct call, e.g. a test)
+    p_account_version  integer,      -- core account.version
+    p_event_id         uuid DEFAULT NULL)  -- Kafka event id
 RETURNS text
 LANGUAGE plpgsql
 AS $$
@@ -54,10 +24,7 @@ DECLARE
     v_contact_id bigint;
     v_task_at    timestamptz;
 BEGIN
-    -- -------------------------------------------------------------------------
-    -- 0. Idempotency. Kafka may deliver an event more
-    --    than once; remember each event id and ignore repeats.
-    -- -------------------------------------------------------------------------
+    -- 0. Skip events already processed
     IF p_event_id IS NOT NULL THEN
         INSERT INTO processed_event (event_id) VALUES (p_event_id)
         ON CONFLICT (event_id) DO NOTHING;
@@ -66,12 +33,10 @@ BEGIN
         END IF;
     END IF;
 
-    -- Same random numbers for the same account on every run (see header).
+    -- Seed random by account id (repeatable)
     PERFORM setseed(mod(p_account_id, 10000) / 10000.0);
 
-    -- -------------------------------------------------------------------------
-    -- 1. Segment from age at opening.
-    -- -------------------------------------------------------------------------
+    -- 1. Segment by age at opening
     v_age := date_part('year', age(p_opened_at::date, p_date_of_birth));
     v_segment := CASE
                      WHEN v_age < 23  THEN 'STUDENT'
@@ -80,10 +45,7 @@ BEGIN
                      ELSE                  'SENIOR'
                  END;
 
-    -- -------------------------------------------------------------------------
-    -- 2. Lifecycle stage from the account status and how long ago it opened.
-    --    (CLOSED is not used in the prototype; it falls into UNDER_REVIEW.)
-    -- -------------------------------------------------------------------------
+    -- 2. Lifecycle stage
     v_stage := CASE
                    WHEN p_account_status = 'REJECTED' THEN 'DECLINED'
                    WHEN p_account_status = 'ACTIVE'
@@ -92,10 +54,7 @@ BEGIN
                    ELSE 'UNDER_REVIEW'
                END;
 
-    -- -------------------------------------------------------------------------
-    -- 3. Contact: versioned upsert. A new customer is inserted; an existing
-    --    one is only updated if this data is NEWER than what CRM holds.
-    -- -------------------------------------------------------------------------
+    -- 3. Contact (versioned upsert)
     INSERT INTO crm_contact (customer_id, segment, source_version)
     VALUES (p_customer_id, v_segment, p_customer_version)
     ON CONFLICT (customer_id) DO UPDATE
@@ -107,11 +66,7 @@ BEGIN
     SELECT contact_id INTO v_contact_id
     FROM crm_contact WHERE customer_id = p_customer_id;
 
-    -- -------------------------------------------------------------------------
-    -- 4. Financial account: versioned upsert, guarded by the ACCOUNT version,
-    --    so an old event (e.g. AccountOpened replayed after AccountActivated)
-    --    can never move the account backwards.
-    -- -------------------------------------------------------------------------
+    -- 4. Financial account (versioned upsert)
     INSERT INTO crm_financial_account (account_id, contact_id, account_status,
                                        lifecycle_stage, source_version)
     VALUES (p_account_id, v_contact_id, p_account_status, v_stage, p_account_version)
@@ -122,17 +77,12 @@ BEGIN
            synced_at       = now()
      WHERE EXCLUDED.source_version > crm_financial_account.source_version;
 
-    -- FOUND is false when the WHERE above blocked the update: this data is
-    -- older than what CRM already has, so stop here (no task from old data).
+    -- Data is older than what CRM has: stop
     IF NOT FOUND THEN
         RETURN 'skipped: CRM already has a newer version of this account';
     END IF;
 
-    -- -------------------------------------------------------------------------
-    -- 5. Welcome-call task, only for ACTIVE accounts, at most one per account.
-    --    opened_at = activated_at + random 0-24 h, capped at now.
-    --    status    = COMPLETED (85% chance) if older than 7 days, else OPEN.
-    -- -------------------------------------------------------------------------
+    -- 5. Welcome call for ACTIVE accounts
     IF p_account_status = 'ACTIVE' THEN
         v_task_at := LEAST(COALESCE(p_activated_at, now()) + random() * interval '24 hours',
                            now());

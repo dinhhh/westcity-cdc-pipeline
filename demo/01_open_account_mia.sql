@@ -1,49 +1,29 @@
--- =============================================================================
--- File:     demo/01_open_account_mia.sql
--- Purpose:  Demo scene 1: Mia Nguyen opens an EVERYDAY account in the mobile
---           app (docs/demo-flow.md section 7).
---           Like the real app, the script first records her identity checks
---           in identity_fraud, then opens the account in core_banking. From
---           there the account travels the real pipeline:
---             core_banking.outbox -> Debezium -> Kafka
---               -> consumer-fraud, consumer-crm, consumer-loyalty, consumer-dw
--- Run:      docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/01_open_account_mia.sql
---
--- Mia: 27 years old, lives in Parramatta NSW, gives marketing consent,
--- signs up on her own new phone, passes KYC, clear on the watchlist.
--- Expected:
---   fraud      APPROVE, LOW score (no risk signals, only the random base 0-25)
---   after demo/apply_decisions.sql:
---   core       ACTIVE
---   CRM        segment YOUNG_PROFESSIONAL, stage NEW_ONBOARDING, welcome-call task
---   loyalty    enrolled, BRONZE, 5,000 welcome points (EVERYDAY)
--- Running it again opens another account for another "Mia" (new ids).
--- =============================================================================
+-- Scene 1: Mia opens an EVERYDAY account (expected: APPROVE, then ACTIVE,
+-- CRM welcome call, loyalty BRONZE + 5,000 points).
+-- Run: docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/01_open_account_mia.sql
 
 \set ON_ERROR_STOP on
--- Quiet: no "INSERT 0 1" / "connected to" lines, only the results.
+-- Hide psql noise
 \set QUIET on
 \pset footer off
 
--- 1. Take Mia's customer and account ids from core banking's counters
---    (the app reserves them when she starts signing up).
+-- 1. Reserve customer and account ids
 \connect core_banking
 SELECT nextval(pg_get_serial_sequence('customer', 'customer_id')) AS customer_id,
        nextval(pg_get_serial_sequence('account',  'account_id'))  AS account_id \gset
 
 
--- 2. identity_fraud: the app's identity checks, done BEFORE the account is
---    opened, so the fraud consumer finds them when AccountOpened arrives.
+-- 2. identity_fraud checks (before the account opens)
 \connect identity_fraud
 
--- Her own, brand-new phone (a device no one else has used).
+-- Her own new phone
 INSERT INTO device (device_fingerprint)
 VALUES (md5('mia-phone-' || :customer_id))
 RETURNING device_id \gset
 
 INSERT INTO onboarding_session (session_id, customer_id, device_id, started_at)
 VALUES (md5('session-' || :customer_id)::uuid, :customer_id, :device_id,
-        now() - interval '6 minutes');                                   -- sign-up took 6 minutes
+        now() - interval '6 minutes');                                   -- 6-minute sign-up
 
 INSERT INTO kyc_verification (customer_id, attempt_no, result)
 VALUES (:customer_id, 1, 'PASS');
@@ -52,8 +32,7 @@ INSERT INTO watchlist_screening (customer_id, match_status)
 VALUES (:customer_id, 'CLEAR');
 
 
--- 3. core_banking: open the account in ONE transaction. At COMMIT the
---    triggers (sql/03) write CustomerCreated and AccountOpened to the outbox.
+-- 3. Open the account in one transaction (outbox events at COMMIT)
 \connect core_banking
 
 BEGIN;
@@ -82,7 +61,7 @@ VALUES (:account_id, :customer_id, 'PRIMARY');
 COMMIT;
 
 
--- 4. Show what happened in core banking.
+-- 4. Show the result
 \echo
 \echo '=== Mia''s account is open. It stays PENDING until the fraud decision is applied:'
 SELECT a.account_id, c.first_name || ' ' || c.last_name AS customer,

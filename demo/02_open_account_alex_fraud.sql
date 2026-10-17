@@ -1,41 +1,23 @@
--- =============================================================================
--- File:     demo/02_open_account_alex_fraud.sql
--- Purpose:  Demo scene 5: a fraudster, Alex Morgan, tries to open an
---           account. He signs up on a device that other customers have
---           already used (a fraud ring) and he FAILS the KYC identity check
---           (CLAUDE.md override: KYC FAIL instead of REFER).
--- Run:      docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/02_open_account_alex_fraud.sql
---
--- Expected:
---   fraud      DECLINE by the hard rule (KYC FAIL), reasons
---              SHARED_DEVICE,KYC_FAIL. His score is only 30 + base (30-55),
---              so the band can be LOW or MEDIUM next to decision DECLINE.
---   after demo/apply_decisions.sql:
---   core       REJECTED
---   CRM        stage DECLINED, no welcome-call task
---   loyalty    NOT enrolled (even though he gave marketing consent)
---   dashboard  D2: declines +1, his ring device gets one more customer;
---              D3: consistency checks still all 0
--- The ring device is the fraud-ring device (sql/07) that the history has
--- used most. SHARED_DEVICE needs 3+ customers on the device including Alex,
--- so the history must already have 2+ on it (true with seed_count 2000).
--- =============================================================================
+-- Scene 5: fraudster Alex uses a fraud-ring device and fails KYC
+-- (expected: DECLINE, then REJECTED, no CRM task, not enrolled in loyalty).
+-- Needs 2+ history customers on the ring device.
+-- Run: docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/02_open_account_alex_fraud.sql
 
 \set ON_ERROR_STOP on
--- Quiet: no "INSERT 0 1" / "connected to" lines, only the results.
+-- Hide psql noise
 \set QUIET on
 \pset footer off
 
--- 1. Take Alex's customer and account ids from core banking's counters.
+-- 1. Reserve customer and account ids
 \connect core_banking
 SELECT nextval(pg_get_serial_sequence('customer', 'customer_id')) AS customer_id,
        nextval(pg_get_serial_sequence('account',  'account_id'))  AS account_id \gset
 
 
--- 2. identity_fraud: the app's identity checks, BEFORE the account opens.
+-- 2. identity_fraud checks
 \connect identity_fraud
 
--- The fraud-ring device with the most customers so far.
+-- Busiest fraud-ring device
 SELECT d.device_id                     AS ring_device_id,
        count(DISTINCT s.customer_id)   AS already_used_by
 FROM device d
@@ -59,14 +41,13 @@ VALUES (md5('session-' || :customer_id)::uuid, :customer_id, :ring_device_id,
         now() - interval '4 minutes');
 
 INSERT INTO kyc_verification (customer_id, attempt_no, result)
-VALUES (:customer_id, 1, 'FAIL');                                        -- documents did not verify
+VALUES (:customer_id, 1, 'FAIL');                                        -- KYC failed
 
 INSERT INTO watchlist_screening (customer_id, match_status)
 VALUES (:customer_id, 'CLEAR');
 
 
--- 3. core_banking: open the account in ONE transaction (triggers write
---    CustomerCreated + AccountOpened to the outbox at COMMIT).
+-- 3. Open the account in one transaction
 \connect core_banking
 
 BEGIN;
@@ -84,7 +65,7 @@ VALUES (:customer_id, 'RESIDENTIAL', '88 High Street', 'Southport', 'QLD', '4215
 INSERT INTO account (account_id, branch_id, account_number, product_code, channel,
                      onboarding_session_id)
 VALUES (:account_id,
-        (SELECT branch_id FROM branch WHERE bsb = '934000'),             -- Brisbane CBD branch
+        (SELECT branch_id FROM branch WHERE bsb = '934000'),             -- Brisbane CBD
         (10000000 + :account_id)::text,
         'EVERYDAY', 'MOBILE',
         md5('session-' || :customer_id)::uuid);
@@ -95,7 +76,7 @@ VALUES (:account_id, :customer_id, 'PRIMARY');
 COMMIT;
 
 
--- 4. Show what happened in core banking.
+-- 4. Show the result
 \echo
 \echo '=== Alex''s account is open, PENDING until the fraud decision is applied:'
 SELECT a.account_id, c.first_name || ' ' || c.last_name AS customer,

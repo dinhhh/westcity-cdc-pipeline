@@ -1,39 +1,7 @@
--- =============================================================================
--- File:     sql/05_fraud_scoring.sql
--- Purpose:  Identity & Fraud enrichment for a new account: look at the
---           customer's device, KYC result and watchlist result, compute a
---           risk score, band and decision, and store it in risk_assessment.
---           Applies docs/demo-flow.md section 2.1 with the CLAUDE.md
---           overrides (no ip_risk_flag; REVIEW is final).
--- Runs:     Automatically after 04_crm_onboarding.sql on an empty data volume.
---           It only CREATES the function; nothing is inserted here.
---
--- The fraud consumer (consumers/consumer.py fraud) reads AccountOpened events
--- from Kafka and calls fraud_assess_account(...) once per event, passing the
--- event id so repeats are skipped. The 90-day history (seed/seed_history.sql)
--- and the live demo accounts both arrive this way.
---
--- The device, KYC and watchlist rows must already exist (the onboarding app
--- writes them before the account is opened: seed/seed_history.sql for the
--- history, the demo scripts for Mia and Alex).
---
--- Rules:
---   risk_score = base (random 0-25)
---              + 30 if the device is shared by 3 or more customers
---              + 20 if the latest KYC result is REFER
---              + 25 if the watchlist result is POSSIBLE
---              capped at 100
---   risk_band  = LOW < 40, MEDIUM 40-70, HIGH > 70
---   decision   = LOW -> APPROVE, MEDIUM -> REVIEW, HIGH -> DECLINE
---   hard rules = KYC FAIL or watchlist CONFIRMED -> DECLINE, whatever the score
---   reasons    = the signals that added points or forced DECLINE:
---                SHARED_DEVICE, KYC_REFER, WATCHLIST_POSSIBLE, KYC_FAIL,
---                WATCHLIST_CONFIRMED
---   assessed_at = opened_at + random 5 to 120 seconds (never later than now)
---
--- The decision is NOT written to core_banking here. Applying it is a
--- separate, manual step: demo/apply_decisions.sql.
--- =============================================================================
+-- Fraud scoring: fraud_assess_account() is called by the fraud consumer for
+-- each AccountOpened event. Scores device, KYC and watchlist signals and
+-- saves the decision. Rules: docs/demo-flow.md 2.1.
+-- Applying the decision is a manual step (demo/apply_decisions.sql).
 
 \connect identity_fraud
 
@@ -42,12 +10,12 @@ CREATE FUNCTION fraud_assess_account(
     p_customer_id bigint,        -- core_banking customer_id (PRIMARY holder)
     p_session_id  uuid,          -- account.onboarding_session_id (may be NULL)
     p_opened_at   timestamptz,   -- when the account was opened
-    p_event_id    uuid DEFAULT NULL)  -- Kafka event id, for idempotency
+    p_event_id    uuid DEFAULT NULL)  -- Kafka event id
 RETURNS text
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_device_customers integer := 0;       -- customers who used the same device
+    v_device_customers integer := 0;       -- customers on same device
     v_kyc_result       varchar(5);         -- latest KYC attempt
     v_watchlist        varchar(9);         -- watchlist result
     v_score            integer;
@@ -55,10 +23,7 @@ DECLARE
     v_decision         varchar(7);
     v_reasons          text[] := '{}';     -- reason codes collected below
 BEGIN
-    -- -------------------------------------------------------------------------
-    -- 0. Idempotency: Kafka may deliver an event more than once; remember each
-    --    event id and ignore repeats.
-    -- -------------------------------------------------------------------------
+    -- 0. Skip events already processed
     IF p_event_id IS NOT NULL THEN
         INSERT INTO processed_event (event_id) VALUES (p_event_id)
         ON CONFLICT (event_id) DO NOTHING;
@@ -67,14 +32,11 @@ BEGIN
         END IF;
     END IF;
 
-    -- Same random numbers for the same account on every run (events arrive
-    -- in no fixed order, so the seed comes from the account id).
+    -- Seed random by account id (repeatable)
     PERFORM setseed(mod(p_account_id, 10000) / 10000.0);
 
-    -- -------------------------------------------------------------------------
-    -- 1. Signals the fraud platform already holds for this customer.
-    -- -------------------------------------------------------------------------
-    -- How many different customers signed up on this session's device?
+    -- 1. Signals for this customer
+    -- Customers sharing this device
     SELECT count(DISTINCT other.customer_id)
       INTO v_device_customers
       FROM onboarding_session s
@@ -93,9 +55,7 @@ BEGIN
       FROM watchlist_screening
      WHERE customer_id = p_customer_id;
 
-    -- -------------------------------------------------------------------------
-    -- 2. Score: random base plus points for each risk signal, capped at 100.
-    -- -------------------------------------------------------------------------
+    -- 2. Score (capped at 100)
     v_score := floor(random() * 26);                       -- base 0-25
 
     IF v_device_customers >= 3 THEN
@@ -113,9 +73,7 @@ BEGIN
 
     v_score := LEAST(v_score, 100);
 
-    -- -------------------------------------------------------------------------
-    -- 3. Band and decision from the score.
-    -- -------------------------------------------------------------------------
+    -- 3. Band and decision
     v_band := CASE WHEN v_score < 40  THEN 'LOW'
                    WHEN v_score <= 70 THEN 'MEDIUM'
                    ELSE                    'HIGH'
@@ -125,7 +83,7 @@ BEGIN
                               ELSE               'DECLINE'
                   END;
 
-    -- Hard rules: these decline the account whatever the score.
+    -- Hard decline rules
     IF v_kyc_result = 'FAIL' THEN
         v_decision := 'DECLINE';
         v_reasons  := v_reasons || 'KYC_FAIL'::text;
@@ -135,10 +93,7 @@ BEGIN
         v_reasons  := v_reasons || 'WATCHLIST_CONFIRMED'::text;
     END IF;
 
-    -- -------------------------------------------------------------------------
-    -- 4. Store the assessment (at most one per account).
-    --    Decision time = opened_at + 5 to 120 seconds, capped at now.
-    -- -------------------------------------------------------------------------
+    -- 4. Save assessment
     INSERT INTO risk_assessment (account_id, customer_id, risk_score, risk_band,
                                  decision, reason_codes, assessed_at)
     VALUES (p_account_id, p_customer_id, v_score, v_band, v_decision,

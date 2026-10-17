@@ -531,6 +531,7 @@ Is account opening growing, through which products and channels, and who is open
 | `vw_d1_latest_openings` | Table: the 15 newest openings and what each system decided |
 
 (Screenshot at the top of this page.)
+![D1 Account Opening Growth](docs/images/dashboard_web_d1.png)
 
 ### D2 Onboarding Risk & Compliance (UC2)
 How risky are new customers, what triggers the risk, and how fast do we decide?

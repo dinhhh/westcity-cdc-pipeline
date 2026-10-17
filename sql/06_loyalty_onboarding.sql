@@ -1,29 +1,6 @@
--- =============================================================================
--- File:     sql/06_loyalty_onboarding.sql
--- Purpose:  Loyalty enrichment: when an account is approved, enrol the
---           customer (if they gave marketing consent) and give a welcome
---           offer; when an account is rejected, make sure the customer is
---           not left enrolled. Applies docs/demo-flow.md section 2.4.
--- Runs:     Automatically after 05_fraud_scoring.sql on an empty data volume.
---           It only CREATES the function; nothing is inserted here.
---
--- The loyalty consumer (consumers/consumer.py loyalty) reads AccountActivated
--- and AccountRejected events from Kafka and calls loyalty_onboard_account(...)
--- once per event, passing the event id so repeats are skipped. The 90-day
--- history (seed/seed_history.sql) and the live demo accounts both arrive
--- this way.
---
--- Rules:
---   eligibility   enrol ONLY if account_status = ACTIVE AND marketing_consent
---   tier          BRONZE for all new members
---   welcome offer EVERYDAY -> 5,000 points; SAVINGS -> 3,000; any other
---                 product -> 1,000 (rows in loyalty_offer)
---   assigned_at   = activated_at (never later than now)
---   redemption    REDEEMED with 60% chance if assigned more than 14 days
---                 ago, otherwise ASSIGNED
---   rejected      never enrolled; if an enrolled account is rejected, the
---                 member becomes UNENROLLED (compensation)
--- =============================================================================
+-- Loyalty onboarding: loyalty_onboard_account() is called by the loyalty
+-- consumer. Enrols consenting customers with ACTIVE accounts and gives a
+-- welcome offer; unenrols them if the account is rejected.
 
 \connect loyalty
 
@@ -34,8 +11,8 @@ CREATE FUNCTION loyalty_onboard_account(
     p_account_status    varchar,      -- ACTIVE / REJECTED (others are ignored)
     p_marketing_consent boolean,      -- customer's consent, from the event
     p_activated_at      timestamptz,  -- when the account became ACTIVE
-    p_account_version   integer,      -- core account.version, for the versioned update
-    p_event_id          uuid DEFAULT NULL)  -- Kafka event id, for idempotency
+    p_account_version   integer,      -- core account.version
+    p_event_id          uuid DEFAULT NULL)  -- Kafka event id
 RETURNS text
 LANGUAGE plpgsql
 AS $$
@@ -45,9 +22,7 @@ DECLARE
     v_points      integer;
     v_assigned_at timestamptz;
 BEGIN
-    -- -------------------------------------------------------------------------
-    -- 0. Idempotency: ignore an event that was already processed.
-    -- -------------------------------------------------------------------------
+    -- 0. Skip events already processed
     IF p_event_id IS NOT NULL THEN
         INSERT INTO processed_event (event_id) VALUES (p_event_id)
         ON CONFLICT (event_id) DO NOTHING;
@@ -56,14 +31,10 @@ BEGIN
         END IF;
     END IF;
 
-    -- Same random numbers for the same account on every run.
+    -- Seed random by account id (repeatable)
     PERFORM setseed(mod(p_account_id, 10000) / 10000.0);
 
-    -- -------------------------------------------------------------------------
-    -- 1. Rejected account: compensation. If this account had earned a
-    --    welcome offer (only possible if it was active before), unenrol the
-    --    member. The version check stops an OLD event from undoing a newer one.
-    -- -------------------------------------------------------------------------
+    -- 1. Rejected: unenrol (version check blocks old events)
     IF p_account_status = 'REJECTED' THEN
         UPDATE loyalty_member m
            SET member_status = 'UNENROLLED',
@@ -78,9 +49,7 @@ BEGIN
         RETURN 'not enrolled: account rejected';
     END IF;
 
-    -- -------------------------------------------------------------------------
-    -- 2. Eligibility: only ACTIVE accounts of customers who gave consent.
-    -- -------------------------------------------------------------------------
+    -- 2. Only ACTIVE accounts with consent
     IF p_account_status <> 'ACTIVE' THEN
         RETURN 'not enrolled: account is ' || p_account_status;
     END IF;
@@ -88,9 +57,7 @@ BEGIN
         RETURN 'not enrolled: no marketing consent';
     END IF;
 
-    -- -------------------------------------------------------------------------
-    -- 3. Enrol the customer: new member at BRONZE, or re-enrol an existing one.
-    -- -------------------------------------------------------------------------
+    -- 3. Enrol (or re-enrol) at BRONZE
     INSERT INTO loyalty_member (customer_id)
     VALUES (p_customer_id)
     ON CONFLICT (customer_id) DO UPDATE
@@ -98,10 +65,7 @@ BEGIN
            synced_at     = now()
     RETURNING member_id INTO v_member_id;
 
-    -- -------------------------------------------------------------------------
-    -- 4. Welcome offer for this account: the offer for the product if there is
-    --    one, otherwise the "any other product" offer (product_code NULL).
-    -- -------------------------------------------------------------------------
+    -- 4. Welcome offer (product match, else default)
     SELECT offer_id, bonus_points
       INTO v_offer_id, v_points
       FROM loyalty_offer
