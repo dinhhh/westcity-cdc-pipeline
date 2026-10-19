@@ -1,7 +1,3 @@
--- core_banking outbox: triggers write an event row in the same transaction
--- as each customer/account change. Debezium reads the outbox into Kafka.
--- Some triggers are DEFERRED so they see rows added later in the transaction.
-
 \connect core_banking
 
 
@@ -102,8 +98,6 @@ BEGIN
 END;
 $$;
 
-
--- 3. Version triggers: +1 when a business column changes
 
 CREATE FUNCTION trg_customer_bump_version()
 RETURNS trigger
@@ -238,6 +232,5 @@ CREATE TRIGGER account_status_event
           AND NEW.account_status IN ('ACTIVE','REJECTED'))
     EXECUTE FUNCTION trg_account_status_changed();
 
-
--- 5. Publication for Debezium (outbox only)
+-- 5. Publication for Debezium: ONLY the outbox table.
 CREATE PUBLICATION dbz_outbox_publication FOR TABLE outbox;

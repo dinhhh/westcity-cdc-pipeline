@@ -1,5 +1,11 @@
--- Dashboard views (gold layer) for D1-D3. The app just runs SELECT * on each.
--- Dates are Sydney time; percentages are 0-100.
+-- =============================================================================
+-- Dashboards:
+--   D1 Account Opening Growth           (business; UC1)   vw_d1_*
+--   D2 Onboarding Risk & Compliance     (UC2)             vw_d2_*
+--   D3 Customer Engagement & Consistency (UC3)            vw_d3_*
+-- "Today" and dates are Sydney business dates (the database time zone).
+-- Percentages are 0-100 with one decimal.
+-- =============================================================================
 
 \connect westcity_dw
 

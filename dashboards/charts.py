@@ -1,15 +1,3 @@
-"""
-dashboards/charts.py - the charts of the three dashboards, defined once.
-
-Used by:
-  dashboards/app.py               the live web app  (http://localhost:8050)
-  dashboards/build_dashboards.py  the static HTML files (dashboards/output/)
-
-Rules (docs/demo-flow.md section 6): every number comes from a SQL view in
-the gold layer (sql/09_reports_dashboards.sql). Python only runs
-SELECT * FROM gold.<view> and draws the result; there is no filtering,
-grouping, joining or calculating here. pandas only holds the query result.
-"""
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go

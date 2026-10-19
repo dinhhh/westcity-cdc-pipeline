@@ -1,7 +1,22 @@
--- Fraud scoring: fraud_assess_account() is called by the fraud consumer for
--- each AccountOpened event. Scores device, KYC and watchlist signals and
--- saves the decision. Rules: docs/demo-flow.md 2.1.
--- Applying the decision is a manual step (demo/apply_decisions.sql).
+-- =============================================================================
+-- The device, KYC and watchlist rows must already exist (the onboarding app
+-- writes them before the account is opened: seed/seed_history.sql for the
+-- history, the demo scripts for Mia and Alex).
+--
+-- Rules:
+--   risk_score = base (random 0-25)
+--              + 30 if the device is shared by 3 or more customers
+--              + 20 if the latest KYC result is REFER
+--              + 25 if the watchlist result is POSSIBLE
+--              capped at 100
+--   risk_band  = LOW < 40, MEDIUM 40-70, HIGH > 70
+--   decision   = LOW -> APPROVE, MEDIUM -> REVIEW, HIGH -> DECLINE
+--   hard rules = KYC FAIL or watchlist CONFIRMED -> DECLINE, whatever the score
+--   reasons    = the signals that added points or forced DECLINE:
+--                SHARED_DEVICE, KYC_REFER, WATCHLIST_POSSIBLE, KYC_FAIL,
+--                WATCHLIST_CONFIRMED
+--   assessed_at = opened_at + random 5 to 120 seconds (never later than now)
+-- =============================================================================
 
 \connect identity_fraud
 

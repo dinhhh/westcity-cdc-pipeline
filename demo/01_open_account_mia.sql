@@ -1,13 +1,32 @@
--- Scene 1: Mia opens an EVERYDAY account (expected: APPROVE, then ACTIVE,
--- CRM welcome call, loyalty BRONZE + 5,000 points).
--- Run: docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/01_open_account_mia.sql
+-- =============================================================================
+-- File:     demo/01_open_account_mia.sql
+-- Purpose:  Demo scene 1: Mia Nguyen opens an EVERYDAY account in the mobile
+--           app (docs/demo-flow.md section 7).
+--           Like the real app, the script first records her identity checks
+--           in identity_fraud, then opens the account in core_banking. From
+--           there the account travels the real pipeline:
+--             core_banking.outbox -> Debezium -> Kafka
+--               -> consumer-fraud, consumer-crm, consumer-loyalty, consumer-dw
+-- Run:      docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/01_open_account_mia.sql
+--
+-- Mia: 27 years old, lives in Parramatta NSW, gives marketing consent,
+-- signs up on her own new phone, passes KYC, clear on the watchlist.
+-- Expected:
+--   fraud      APPROVE, LOW score (no risk signals, only the random base 0-25)
+--   after demo/apply_decisions.sql:
+--   core       ACTIVE
+--   CRM        segment YOUNG_PROFESSIONAL, stage NEW_ONBOARDING, welcome-call task
+--   loyalty    enrolled, BRONZE, 5,000 welcome points (EVERYDAY)
+-- Running it again opens another account for another "Mia" (new ids).
+-- =============================================================================
 
 \set ON_ERROR_STOP on
 -- Hide psql noise
 \set QUIET on
 \pset footer off
 
--- 1. Reserve customer and account ids
+-- 1. Take Mia's customer and account ids from core banking's counters
+--    (the app reserves them when she starts signing up).
 \connect core_banking
 SELECT nextval(pg_get_serial_sequence('customer', 'customer_id')) AS customer_id,
        nextval(pg_get_serial_sequence('account',  'account_id'))  AS account_id \gset
@@ -18,7 +37,7 @@ SELECT nextval(pg_get_serial_sequence('customer', 'customer_id')) AS customer_id
 
 -- Her own new phone
 INSERT INTO device (device_fingerprint)
-VALUES (md5('mia-phone-' || :customer_id))
+VALUES (md5('Mary-phone-' || :customer_id))
 RETURNING device_id \gset
 
 INSERT INTO onboarding_session (session_id, customer_id, device_id, started_at)
@@ -39,9 +58,9 @@ BEGIN;
 
 INSERT INTO customer (customer_id, first_name, last_name, date_of_birth, email, mobile,
                       marketing_consent)
-VALUES (:customer_id, 'Mia', 'Nguyen',
+VALUES (:customer_id, 'Mary', 'Nguyen',
         current_date - interval '27 years 3 months',                     -- 27 years old
-        'mia.nguyen' || :customer_id || '@example.com', '+61412345678',
+        'mary.nguyen' || :customer_id || '@example.com', '+61412345678',
         true);
 
 INSERT INTO customer_address (customer_id, address_type, line1, suburb, state, postcode)
@@ -61,7 +80,7 @@ VALUES (:account_id, :customer_id, 'PRIMARY');
 COMMIT;
 
 
--- 4. Show the result
+-- 4. Show what happened in core banking.
 \echo
 \echo '=== Mia''s account is open. It stays PENDING until the fraud decision is applied:'
 SELECT a.account_id, c.first_name || ' ' || c.last_name AS customer,

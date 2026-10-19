@@ -1,6 +1,17 @@
--- CRM onboarding: crm_onboard_account() is called by the CRM consumer for
--- each account event. Sets segment and lifecycle stage, and adds a welcome
--- call for ACTIVE accounts. Rules: docs/demo-flow.md 2.3.
+-- =============================================================================
+--   segment          age at opening: STUDENT < 23, YOUNG_PROFESSIONAL 23-35,
+--                    FAMILY 36-55, SENIOR > 55
+--   lifecycle_stage  REJECTED -> DECLINED
+--                    ACTIVE and opened < 30 days ago  -> NEW_ONBOARDING
+--                    ACTIVE and opened >= 30 days ago -> ESTABLISHED
+--                    PENDING -> UNDER_REVIEW
+--   welcome task     crm_case WELCOME_CALL, ONLY for ACTIVE accounts,
+--                    opened_at = activated_at + random 0 to 24 hours
+--                    (never later than now: a task cannot start in the future)
+--   task status      COMPLETED with 85% chance if the task was created more
+--                    than 7 days ago, otherwise OPEN
+--   declined         crm_financial_account.account_status = REJECTED, no task
+-- =============================================================================
 
 \connect crm
 

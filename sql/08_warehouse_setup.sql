@@ -1,6 +1,3 @@
--- Warehouse setup: FDW links to the sources, starting watermarks, and
--- bronze.land_core_event() for consumer-dw. core_banking arrives via Kafka,
--- the other sources are extracted with SQL.
 
 \connect westcity_dw
 

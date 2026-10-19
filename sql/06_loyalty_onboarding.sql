@@ -1,6 +1,20 @@
--- Loyalty onboarding: loyalty_onboard_account() is called by the loyalty
--- consumer. Enrols consenting customers with ACTIVE accounts and gives a
--- welcome offer; unenrols them if the account is rejected.
+-- =============================================================================
+-- Purpose:  Loyalty enrichment: when an account is approved, enrol the
+--           customer (if they gave marketing consent) and give a welcome
+--           offer; when an account is rejected, make sure the customer is
+--           not left enrolled. 
+--
+-- Rules:
+--   eligibility   enrol ONLY if account_status = ACTIVE AND marketing_consent
+--   tier          BRONZE for all new members
+--   welcome offer EVERYDAY -> 5,000 points; SAVINGS -> 3,000; any other
+--                 product -> 1,000 (rows in loyalty_offer)
+--   assigned_at   = activated_at (never later than now)
+--   redemption    REDEEMED with 60% chance if assigned more than 14 days
+--                 ago, otherwise ASSIGNED
+--   rejected      never enrolled; if an enrolled account is rejected, the
+--                 member becomes UNENROLLED (compensation)
+-- =============================================================================
 
 \connect loyalty
 

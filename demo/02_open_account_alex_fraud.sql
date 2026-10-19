@@ -1,8 +1,3 @@
--- Scene 5: fraudster Alex uses a fraud-ring device and fails KYC
--- (expected: DECLINE, then REJECTED, no CRM task, not enrolled in loyalty).
--- Needs 2+ history customers on the ring device.
--- Run: docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/02_open_account_alex_fraud.sql
-
 \set ON_ERROR_STOP on
 -- Hide psql noise
 \set QUIET on

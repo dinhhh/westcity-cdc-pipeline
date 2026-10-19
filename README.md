@@ -699,3 +699,9 @@ docker compose exec postgres psql -U westcity_admin -d westcity_dw \
 | Charts are almost empty | Set `\set seed_count 2000` in `seed/seed_history.sql`, then rebuild and seed again |
 | A change in `sql/` has no effect | The `sql/` scripts only run on an empty database: rebuild from zero (section 2) |
 | The connector is not RUNNING | `docker compose logs connect`; after a partial reset, rebuild Postgres and Kafka **together** |
+
+
+# Re-start Docker images
+docker compose down --volumes --rmi all --remove-orphans
+docker compose build --no-cache --pull
+docker compose up -d

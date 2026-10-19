@@ -1,6 +1,3 @@
--- Scene 2: trace one account through every system (read-only).
--- Run: docker compose exec -T postgres psql -U westcity_admin -d core_banking [-v account_id=2011] < demo/03_trace_account.sql
-
 \set ON_ERROR_STOP on
 -- Hide psql noise
 \set QUIET on

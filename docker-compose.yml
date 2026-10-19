@@ -1,11 +1,4 @@
 # =============================================================================
-# West City Bank – event-driven integration prototype (UTS 32113 Assignment 2)
-#
-# Services: postgres (+ CloudBeaver editor), kafka, connect (Debezium),
-#           connect-init (registers the outbox connector once, then exits),
-#           consumer-fraud / -crm / -loyalty / -dw (Python),
-#           dashboard (live web dashboards, http://localhost:8050),
-#           python (runs scripts, e.g. the HTML dashboard export).
 # Flow:     core_banking.outbox -> Debezium -> Kafka topics
 #           bank.customer.events / bank.account.events
 #           -> consumers -> identity_fraud, crm, loyalty, westcity_dw bronze
@@ -18,19 +11,6 @@
 #                   (reset Postgres and Kafka TOGETHER: Debezium's saved
 #                   position in Kafka must match the database. CloudBeaver's
 #                   saved connection is kept.)
-# Seed history:     (after the stack is up; the accounts go through Kafka)
-#                   docker compose exec -T postgres psql -U westcity_admin -d core_banking < seed/seed_history.sql
-#                   then, once consumer-fraud has scored them:
-#                   docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/apply_decisions.sql
-# Warehouse load:   docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/run_all.sql
-# Dashboards:       live web app: http://localhost:8050 (service dashboard)
-#                   HTML export:  docker compose exec python python /workspace/dashboards/build_dashboards.py
-#                                 (files in dashboards/output/)
-# Open psql:        docker compose exec postgres psql -U westcity_admin -d core_banking
-# From your Mac:    localhost:5433, user westcity_admin, password lab_admin
-# Read events:      docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
-#                     --bootstrap-server kafka:29092 --topic bank.account.events \
-#                     --from-beginning --property print.key=true
 # =============================================================================
 name: westcity
 
@@ -54,7 +34,7 @@ services:
       - max_replication_slots=10
       - -c
       - max_wal_senders=10
-      # Business time zone (CLAUDE.md): Australia/Sydney.
+      # Business time zone: Australia/Sydney.
       - -c
       - timezone=Australia/Sydney
     environment:
@@ -67,11 +47,9 @@ services:
       - "5433:5432"
     volumes:
       # Database files live in a Docker volume, not in the project folder:
-      # the project is in OneDrive, and syncing live database files corrupts them.
       - pgdata:/var/lib/postgresql/data
-      # On an EMPTY database, Postgres runs every .sql file in this folder in
+      # Postgres runs every .sql file in this folder in
       # name order (01_..., 02_...), stopping at the first error.
-      # It does not look inside subfolders, so sql/ stays flat.
       - ./sql:/docker-entrypoint-initdb.d:ro
       # Warehouse load scripts, run on demand: psql -f /etl/run_all.sql
       - ./etl:/etl:ro
@@ -96,8 +74,7 @@ services:
     ports:
       - "8978:8978"
     volumes:
-      # Saved connections and settings. A Docker volume, not a project folder,
-      # so OneDrive does not sync files while CloudBeaver is writing them.
+      # Saved connections and settings. A Docker volume, not a project folder
       - cloudbeaver:/opt/cloudbeaver/workspace
       # credentials for admin: cbadmin/Studentadmin1
     depends_on:
@@ -174,21 +151,6 @@ services:
   # ---------------------------------------------------------------------------
   # connect-init: runs once. Sends connectors/core-outbox.json to Kafka Connect
   # (PUT = create the connector, or update it if it already exists), then exits.
-  #
-  # What connectors/core-outbox.json says:
-  #   - read core_banking through the publication dbz_outbox_publication
-  #     (created in sql/03_outbox_triggers.sql, outbox table only), using the
-  #     replication slot "debezium_outbox" to remember its position
-  #   - snapshot.mode=initial: on first start, also send the rows already in
-  #     the outbox, then stream every new row
-  #   - EventRouter transform (Debezium's outbox pattern support) turns each
-  #     outbox row into a clean business event:
-  #       topic   = bank.<aggregatetype>.events  (bank.account.events, bank.customer.events)
-  #       key     = aggregateid                  (account_id / customer_id)
-  #       value   = payload, as plain JSON       (docs/event-contract.md)
-  #       headers = id, type, event_version, tx_id
-  #   - new topics get 3 partitions: all events of one account/customer share
-  #     a partition, so they stay in order
   # ---------------------------------------------------------------------------
   connect-init:
     image: curlimages/curl:8.22.0
@@ -210,13 +172,7 @@ services:
     restart: "no"
 
   # ---------------------------------------------------------------------------
-  # Consumers: the SAME script, consumers/consumer.py, run once per downstream
-  # system. Each reads bank.account.events in its own consumer group
-  # (fraud-consumer, crm-consumer, loyalty-consumer), so every system gets
-  # every event and keeps its own position. Image: python/Dockerfile (the
-  # course-lab python:3.11-slim image plus the Kafka and Postgres clients).
-  # Logs:  docker compose logs -f consumer-fraud consumer-crm consumer-loyalty
-  # Demo scene 6 (resilience): docker compose stop consumer-loyalty ... start
+  # Consumers
   # ---------------------------------------------------------------------------
   consumer-fraud:
     build: ./python

@@ -1,8 +1,6 @@
--- Reference data: branches, products, fraud-ring devices, welcome offers.
--- Customers and accounts are added later by seed/seed_history.sql.
-
-
--- 1. core_banking
+-- #############################################################################
+-- 1. core_banking: branches, products, link to identity_fraud
+-- #############################################################################
 \connect core_banking
 
 -- Branches (BSB = 93 + state digit + branch number)

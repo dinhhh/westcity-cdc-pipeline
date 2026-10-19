@@ -1,9 +1,6 @@
-
--- Creates all tables. Run via psql (uses \connect).
--- Cross-database ids are logical keys (no FK). Triggers and data come in 03-09.
-
--- 1. core_banking
-
+-- #############################################################################
+-- 1. core_banking – system of record for customers and accounts (ER section 1)
+-- #############################################################################
 \connect core_banking
 
 -- Branch (BSB = 6-digit branch code)
