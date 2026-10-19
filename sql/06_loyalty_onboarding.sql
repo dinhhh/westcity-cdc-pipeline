@@ -1,17 +1,8 @@
 -- =============================================================================
--- File:     sql/06_loyalty_onboarding.sql
 -- Purpose:  Loyalty enrichment: when an account is approved, enrol the
 --           customer (if they gave marketing consent) and give a welcome
 --           offer; when an account is rejected, make sure the customer is
---           not left enrolled. Applies docs/demo-flow.md section 2.4.
--- Runs:     Automatically after 05_fraud_scoring.sql on an empty data volume.
---           It only CREATES the function; nothing is inserted here.
---
--- The loyalty consumer (consumers/consumer.py loyalty) reads AccountActivated
--- and AccountRejected events from Kafka and calls loyalty_onboard_account(...)
--- once per event, passing the event id so repeats are skipped. The 90-day
--- history (seed/seed_history.sql) and the live demo accounts both arrive
--- this way.
+--           not left enrolled. 
 --
 -- Rules:
 --   eligibility   enrol ONLY if account_status = ACTIVE AND marketing_consent

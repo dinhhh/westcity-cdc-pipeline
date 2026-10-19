@@ -1,23 +1,3 @@
--- =============================================================================
--- File:     demo/03_trace_account.sql
--- Purpose:  Demo scene 2: follow ONE account through every system, in the
---           order the data travels (docs/demo-flow.md section 7):
---             1. core banking   the account + the events in its outbox
---             2. Kafka          topic / partition / offset of each event
---             3. identity & fraud  signals, score, decision
---             4. CRM            segment, lifecycle stage, welcome-call task
---             5. loyalty        membership, tier, welcome offer
---             6. warehouse      silver history + the gold fact row
---           Each system also shows WHICH events it processed and how many
---           seconds after they were written to the outbox (the
---           processed_event table the consumers keep for idempotency).
--- Run:      the newest account:
---             docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/03_trace_account.sql
---           a given account:
---             docker compose exec -T postgres psql -U westcity_admin -d core_banking -v account_id=2011 < demo/03_trace_account.sql
---           Read-only: safe to run as often as you like, at any stage.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 -- Quiet: no "INSERT 0 1" / "connected to" lines, only the results.
 \set QUIET on

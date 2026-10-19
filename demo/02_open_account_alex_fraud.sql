@@ -1,26 +1,3 @@
--- =============================================================================
--- File:     demo/02_open_account_alex_fraud.sql
--- Purpose:  Demo scene 5: a fraudster, Alex Morgan, tries to open an
---           account. He signs up on a device that other customers have
---           already used (a fraud ring) and he FAILS the KYC identity check
---           (CLAUDE.md override: KYC FAIL instead of REFER).
--- Run:      docker compose exec -T postgres psql -U westcity_admin -d core_banking < demo/02_open_account_alex_fraud.sql
---
--- Expected:
---   fraud      DECLINE by the hard rule (KYC FAIL), reasons
---              SHARED_DEVICE,KYC_FAIL. His score is only 30 + base (30-55),
---              so the band can be LOW or MEDIUM next to decision DECLINE.
---   after demo/apply_decisions.sql:
---   core       REJECTED
---   CRM        stage DECLINED, no welcome-call task
---   loyalty    NOT enrolled (even though he gave marketing consent)
---   dashboard  D2: declines +1, his ring device gets one more customer;
---              D3: consistency checks still all 0
--- The ring device is the fraud-ring device (sql/07) that the history has
--- used most. SHARED_DEVICE needs 3+ customers on the device including Alex,
--- so the history must already have 2+ on it (true with seed_count 2000).
--- =============================================================================
-
 \set ON_ERROR_STOP on
 -- Quiet: no "INSERT 0 1" / "connected to" lines, only the results.
 \set QUIET on

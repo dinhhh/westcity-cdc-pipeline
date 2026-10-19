@@ -1,18 +1,4 @@
 -- =============================================================================
--- File:     sql/05_fraud_scoring.sql
--- Purpose:  Identity & Fraud enrichment for a new account: look at the
---           customer's device, KYC result and watchlist result, compute a
---           risk score, band and decision, and store it in risk_assessment.
---           Applies docs/demo-flow.md section 2.1 with the CLAUDE.md
---           overrides (no ip_risk_flag; REVIEW is final).
--- Runs:     Automatically after 04_crm_onboarding.sql on an empty data volume.
---           It only CREATES the function; nothing is inserted here.
---
--- The fraud consumer (consumers/consumer.py fraud) reads AccountOpened events
--- from Kafka and calls fraud_assess_account(...) once per event, passing the
--- event id so repeats are skipped. The 90-day history (seed/seed_history.sql)
--- and the live demo accounts both arrive this way.
---
 -- The device, KYC and watchlist rows must already exist (the onboarding app
 -- writes them before the account is opened: seed/seed_history.sql for the
 -- history, the demo scripts for Mia and Alex).
@@ -30,9 +16,6 @@
 --                SHARED_DEVICE, KYC_REFER, WATCHLIST_POSSIBLE, KYC_FAIL,
 --                WATCHLIST_CONFIRMED
 --   assessed_at = opened_at + random 5 to 120 seconds (never later than now)
---
--- The decision is NOT written to core_banking here. Applying it is a
--- separate, manual step: demo/apply_decisions.sql.
 -- =============================================================================
 
 \connect identity_fraud

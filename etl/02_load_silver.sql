@@ -1,27 +1,3 @@
--- =============================================================================
--- File:     etl/02_load_silver.sql
--- Purpose:  TRANSFORM (1/2): load the Data Vault in the silver layer from
---           bronze: hubs (business keys), links (relationships) and
---           satellites (attributes with full history).
--- Run:      step 2 of 3, after etl/01_extract_bronze.sql:
---             docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/02_load_silver.sql
---
--- Safe to run again at any time (idempotent):
---   * a hub or link row is only added if its key is new;
---   * a satellite row is only added if the attributes CHANGED since the
---     latest row for that key (compared through hash_diff). Satellites are
---     never updated or deleted, so silver keeps the full history.
---
--- Hash keys: hk_* = md5 of the business key (e.g. md5('42') for customer 42).
--- hash_diff = md5 of ROW(attributes)::text, e.g. md5('(Mia,Nguyen,NSW,t)').
--- (ROW(...)::text keeps an empty slot for a NULL, so moving a value from one
--- column to another always changes the hash.)
---
--- Data quality: rows that fail a rule are moved to ops.dq_quarantine with
--- the reason, and are NOT loaded.
--- One transaction: if any step fails, nothing is loaded.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 \connect westcity_dw
 

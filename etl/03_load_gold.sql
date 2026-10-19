@@ -1,21 +1,3 @@
--- =============================================================================
--- File:     etl/03_load_gold.sql
--- Purpose:  TRANSFORM (2/2) + LOAD: build the star schema in the gold layer
---           from the Data Vault (silver): the dimensions, then
---           gold.fact_account_opening = ONE combined row per account with
---           what every system added (docs/demo-flow.md section 5).
---           The dashboard views (sql/09) read these tables.
--- Run:      step 3 of 3, after etl/02_load_silver.sql:
---             docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/03_load_gold.sql
---
--- Safe to run again at any time:
---   * dimensions: new members are added; product names are updated;
---     customers are SCD type 2 (a change closes the old row, adds a new one);
---   * the fact table is REBUILT in full from silver each run (it is small,
---     and silver keeps the history, so nothing is lost).
--- One transaction: the dashboards never see a half-built fact table.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 \connect westcity_dw
 

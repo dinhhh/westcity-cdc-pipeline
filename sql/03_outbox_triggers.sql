@@ -1,37 +1,3 @@
--- =============================================================================
--- File:     sql/03_outbox_triggers.sql
--- Purpose:  Make core_banking publish business events through the
---           TRANSACTIONAL OUTBOX: every change to a customer or account also
---           writes one row to the outbox table, in the SAME transaction.
---           Debezium later reads new outbox rows from the write-ahead log and
---           sends them to Kafka. Debezium only READS; these triggers WRITE.
--- Runs:     Automatically after 02_create_tables.sql on an empty data volume.
--- Design:   CLAUDE.md (core_banking) and docs/event-contract.md (payloads).
---
--- What this file creates (all in core_banking):
---   1. Payload builders  customer_snapshot(), account_snapshot()
---   2. Outbox writer     write_outbox()
---   3. Version triggers  +1 on customer.version / account.version when a
---                        business column changes
---   4. Event triggers    customer INSERT  -> CustomerCreated
---                        customer UPDATE  -> CustomerDetailsUpdated
---                        account  INSERT  -> AccountOpened
---                        account  status  -> AccountActivated / AccountRejected
---   5. Publication       dbz_outbox_publication: ONLY the outbox table, which
---                        is all Debezium is allowed to see in this database.
---
--- Why some triggers are DEFERRED: a new account is saved as several rows
--- (account, then account_holder; customer, then customer_address). A normal
--- trigger on account fires straight after the account row, before the holder
--- rows exist, so the event would have no holders. A DEFERRED constraint
--- trigger waits until COMMIT, when every row of the transaction is in place.
---
--- Not in this file yet (added in later steps):
---   open_account()          one-call account opening, for the demo
---   emit_account_snapshot() repair event for reconciliation (UC3)
---   events for address-only changes or for holders added to an existing account
--- =============================================================================
-
 \connect core_banking
 
 
@@ -293,13 +259,5 @@ CREATE TRIGGER account_status_event
           AND NEW.account_status IN ('ACTIVE','REJECTED'))
     EXECUTE FUNCTION trg_account_status_changed();
 
-
--- #############################################################################
 -- 5. Publication for Debezium: ONLY the outbox table.
---    Debezium streams whatever tables a publication lists. Listing only
---    outbox means internal tables (customer, account, ...) are never exposed
---    directly; other systems only ever see the published business events.
---    The Debezium connector will be configured to use this publication by
---    name instead of creating its own.
--- #############################################################################
 CREATE PUBLICATION dbz_outbox_publication FOR TABLE outbox;

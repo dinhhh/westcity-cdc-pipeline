@@ -1,18 +1,4 @@
-"""
-dashboards/app.py - the three dashboards as a live web app (Plotly Dash).
 
-Open http://localhost:8050 in a browser. The `dashboard` service in
-docker-compose.yml starts it with the rest of the stack.
-
-  * One tab per dashboard (D1, D2, D3): the same charts as the HTML files,
-    because both use dashboards/charts.py.
-  * LIVE: every 5 seconds the page reads the gold views again, so after a
-    warehouse load (etl/run_all.sql) the new numbers appear by themselves.
-  * INTERACTIVE: hover a chart for exact values, drag to zoom, double-click
-    to zoom back out, click a legend item to hide or show that series.
-    Zoom and hidden series are kept when the page refreshes.
-  * Same rule as the HTML files: Python only runs SELECT * FROM gold.<view>.
-"""
 from datetime import datetime
 
 import pandas as pd

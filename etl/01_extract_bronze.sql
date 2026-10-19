@@ -1,30 +1,3 @@
--- =============================================================================
--- File:     etl/01_extract_bronze.sql
--- Purpose:  EXTRACT: copy new and changed rows from identity_fraud, crm and
---           loyalty into the bronze layer of westcity_dw, unchanged.
---           (core_banking customers and accounts do not need extracting:
---           consumer-dw lands their events in bronze.core_event from Kafka.
---           Only the small core product table is copied here.)
--- Run:      step 1 of 3 (etl/run_all.sql runs all three), any time, as
---           often as needed:
---             docker compose exec postgres psql -U westcity_admin -d westcity_dw -f /etl/01_extract_bronze.sql
---
--- How "only new or changed rows" works (incremental extract):
---   ops.extract_watermark remembers, per source table, the highest id or the
---   latest synced_at copied so far. Each run copies only rows above it, then
---   moves the watermark up. Small reference tables, and tables without a
---   usable watermark column, are copied in full instead.
---   The source tables are read through postgres_fdw (sql/08): in this
---   database, crm.crm_case is the crm_case table of the crm database.
---
--- Lab simplification: an id or time watermark can miss a row whose
--- transaction commits AFTER a later row was already copied. Production would
--- use CDC (log positions) or a safety overlap window.
---
--- The whole script is ONE transaction: if any step fails, nothing is copied
--- and the watermarks do not move, so it can simply be run again.
--- =============================================================================
-
 \set ON_ERROR_STOP on
 \connect westcity_dw
 

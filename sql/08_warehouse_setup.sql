@@ -1,23 +1,3 @@
--- =============================================================================
--- File:     sql/08_warehouse_setup.sql
--- Purpose:  Connect the warehouse (westcity_dw) to its sources:
---             1. read-only links to the source databases (postgres_fdw),
---                used by etl/01_extract_bronze.sql
---             2. the starting watermark of every incrementally extracted table
---             3. bronze.land_core_event(): how consumer-dw stores a Kafka
---                event in bronze.core_event
--- Runs:     Automatically after 07_reference_data.sql on an empty data volume.
---
--- How each source reaches the warehouse:
---   core_banking    through Kafka: consumer-dw lands every customer / account
---                   event in bronze.core_event (+ a small SQL copy of the
---                   product table, for product names)
---   identity_fraud  SQL extract (incremental, watermarks)
---   crm             SQL extract (incremental, watermarks)
---   loyalty         SQL extract (incremental, watermarks)
---   (Fraud, CRM and Loyalty results are not published to Kafka; only
---   core_banking has an outbox.)
--- =============================================================================
 
 \connect westcity_dw
 

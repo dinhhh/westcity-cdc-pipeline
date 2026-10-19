@@ -1,19 +1,4 @@
 -- =============================================================================
--- File:     sql/04_crm_onboarding.sql
--- Purpose:  CRM enrichment for a customer who is onboarding: when an account
---           reaches CRM, record the customer and account, give the customer a
---           segment and a lifecycle stage, and create a welcome-call task.
---           Applies the rules in docs/demo-flow.md section 2.3.
--- Runs:     Automatically after 03_outbox_triggers.sql on an empty data volume.
---           It only CREATES the function; nothing is inserted here.
---
--- The CRM consumer (consumers/consumer.py crm) reads the account events from
--- Kafka and calls crm_onboard_account(...) once per AccountOpened,
--- AccountActivated and AccountRejected event, passing the event id so
--- repeats are skipped. The 90-day history (seed/seed_history.sql) and the
--- live demo accounts both arrive this way.
---
--- CRM rules (docs/demo-flow.md 2.3):
 --   segment          age at opening: STUDENT < 23, YOUNG_PROFESSIONAL 23-35,
 --                    FAMILY 36-55, SENIOR > 55
 --   lifecycle_stage  REJECTED -> DECLINED
@@ -26,10 +11,6 @@
 --   task status      COMPLETED with 85% chance if the task was created more
 --                    than 7 days ago, otherwise OPEN
 --   declined         crm_financial_account.account_status = REJECTED, no task
---
--- Random values use random(), seeded from the account id at the start of the
--- function. Events arrive in no fixed order, so seeding per account is what
--- makes every rebuild produce the same data.
 -- =============================================================================
 
 \connect crm

@@ -1,17 +1,4 @@
-"""
-dashboards/build_dashboards.py - save the three dashboards as HTML files.
 
-Run it after a warehouse load (etl/run_all.sql):
-    docker compose exec python python /workspace/dashboards/build_dashboards.py
-
-Output (re-running the script refreshes them):
-    dashboards/output/d1_account_opening_growth.html
-    dashboards/output/d2_onboarding_risk_compliance.html
-    dashboards/output/d3_customer_engagement_consistency.html
-
-The same charts are shown live, and refresh by themselves, in the web app
-dashboards/app.py (http://localhost:8050). Both use dashboards/charts.py.
-"""
 import os
 from datetime import datetime
 
