@@ -111,14 +111,6 @@ END;
 $$;
 
 
--- #############################################################################
--- 3. Version triggers: add 1 to the aggregate version whenever a BUSINESS
---    column changes. Consumers compare versions ("versioned upsert") so an
---    older event can never overwrite newer data.
---    The WHEN clause on each trigger decides what counts as a business change,
---    so the functions themselves stay one line.
--- #############################################################################
-
 CREATE FUNCTION trg_customer_bump_version()
 RETURNS trigger
 LANGUAGE plpgsql
